@@ -1,0 +1,25 @@
+# 编辑器 / IDE
+.vscode/
+.idea/
+*.iml
+
+# 依赖
+node_modules/
+
+# 构建产物（由 esbuild 生成，发版时随 Release 上传，不入库）
+main.js
+*.map
+
+# 运行时数据
+data.json
+
+# 部署到本地 vault 的插件副本（由 scripts/deploy.mjs 生成）
+vault/.obsidian/plugins/
+testvault/.obsidian/plugins/
+
+# 本地临时文件（调试 / 探针）
+.dirlist.tmp
+.testout.txt
+.probe*
+.tmp_*
+*.log

@@ -1,0 +1,9 @@
+{
+	"id": "workflow-watcher",
+	"name": "Workflow Watcher",
+	"version": "0.1.0",
+	"minAppVersion": "1.5.0",
+	"description": "An Obsidian plugin for organizing documents based on workflows.一款 obsidian 插件，基于工作流整理文档。",
+	"author": "ikiwi",
+	"isDesktopOnly": false
+}

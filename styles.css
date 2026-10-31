@@ -1,0 +1,4856 @@
+/* ==========================================================================
+   Workflow Watcher · Phase 1 视图样式（dataviewjs v1）+ Phase 2 Modal 样式 + Phase 3/4 增量（计时 / 归档）
+   + Phase 6 主题系统（token 挂在 `.wf-theme[data-wf-theme]`；6 套主题 = token 覆盖，light/dark 双版）
+   视图 / Modal 只挂 class（不写内联样式；唯一例外是右键菜单的 left/top 定位坐标），细节全部在这里维护。
+
+   结构对应关系（views/wfView.ts）：
+     .wf-view                         渲染区（宽度 ≤1400px；页面行宽由 :has(.wf-view) 放开，见 Phase 16.1）
+     .wf-app-title                    ⓪ 引导性大标题（Phase 18 ③：文案来自插件设置，9 套主题各自改字体 / 装饰）
+     .wf-overview                     ① 状态总览（三行：主题 / 计时 / 统计）
+     .wf-main → .wf-sidebar           ② 主体：左侧小工具侧边栏（图标按钮）
+     .wf-main-body → .wf-block        ② 右侧工作区：「正在进行」块
+     .wf-active-columns → .wf-column  ② 多工作流横向分栏（一栏一条泳道）
+     .wf-lane → .wf-block             泳道（`.wf-column` 里的视觉外壳）
+     .wf-col → .wf-card               泳道内的「列」与卡片
+     .wf-dot / .wf-card--{status}     状态视觉：圆点尺寸 / 左侧色条 / 底色（契约 doc/datacontact/data_ixd_phase1_visual_contract.md）
+     .wf-row → .wf-cell → .wf-elbow   子节点行与 CSS 连线（竖线 + 横线）
+     .wf-fold                         ③ 已完成流 / 已取消流折叠区（<details>）
+     .wf-widget-popup → -head/-body   小工具弹窗（挂 body 的固定浮层；`--gantt` 变体更宽）
+     .wf-widget-overlay               弹窗外的全屏遮罩（Phase 18 ①：吃掉下层点击，点它不关闭）
+     .wf-emo-*                        365 天 emo（Phase 18 ④：画布 / 拍立得 / 输入弹窗，配色自成一套）
+     .wf-quad-*                       4 象限节点（Phase 19 M2：16 分区斜俯视 + 右侧预览，只读）
+     .wf-plot-*                       365 天 plot（Phase 19 M3：plot 列表 + SVG 折线 + 增删点 + CSV）
+     .wf-archive-group → .wf-archive-* 已归档分组 / 行（Phase 16 起在 📦 弹窗里）
+     .wf-menu                         右键菜单（资料 / 跳纪要 / 标记为… / 计时 / 归档）
+     .wf-footer / .wf-hint / .wf-issue-box
+
+   结构对应关系（main.ts，契约 §6）：
+     .wfjson-modal / .wfjson-modal-danger    四个右键 Modal 的共同外壳（危险操作 = 加 .wfjson-modal-danger）
+     .wfjson-modal-hint               顶部说明段
+     .wfjson-field → .wfjson-field-label + .wfjson-input    表单一行
+     .wfjson-links-input              links[] JSON 源码 textarea
+     .wfjson-archive-input            归档表单的选填三段（概括 / 原理 / 复盘）
+     .wfjson-modal-error              就地错误框（空时 display:none）
+     .wfjson-modal-footer             底部按钮行
+     .wfjson-analyze-result           分析结果 <pre>
+   ========================================================================== */
+
+/* ==========================================================================
+   Phase 6 · 设计 token（契约 doc/datacontact/data_ixd_discuss_interact_v0.5.md
+   《Phase 6 定稿契约》）
+
+   为什么挂 `body` 而不是 `:root`：Obsidian 的 `--background-*` / `--text-*` /
+   `--color-*` 定义在 `body` / `body.theme-*` 上；自定义属性里的 `var()` 会在
+   「声明所在元素」上求值 —— 挂 `:root`（<html>）会拿不到这些值，整组 token 变成
+   invalid at computed-value time（所有面板底色消失）。挂 `body` 后同一元素上就能
+   解析，后代（含直接挂在 body 下的右键菜单 / Modal）全部继承。
+
+   默认值 = Phase 1–5 的现值（行为保真）：只有主题块会改这组变量。
+   ========================================================================== */
+
+body {
+  /* 面板 / 泳道 / 卡片骨架 */
+  --wf-panel-bg: var(--background-secondary);
+  --wf-panel-border: var(--background-modifier-border);
+  --wf-panel-radius: 2px;
+  --wf-lane-bg: var(--background-primary);
+  --wf-radius-lane: 12px;
+  --wf-radius-card: 10px;
+  --wf-radius-btn: 6px;
+  /* Phase 18 ⑦：卡片宽度不再写死 —— 设置面板把值写到根元素 `--wf-card-width`，
+     `.wf-card` 用 `var(--wf-card-width, 200px)` 回落（默认 200）。 */
+  --wf-card-font-size: 0.86em;
+  --wf-card-border: var(--background-modifier-border-hover, #b9b9b9);
+  --wf-card-open-bg: #ffe9a8; /* 未完成 → 黄底（原型口径，浅色主题保持现状） */
+  --wf-card-done-bg: var(--background-primary);
+  --wf-card-shadow: none;
+  --wf-glow: none;
+
+  /* 连线 / 圆点 / 状态色（契约 data_ixd_phase1_visual_contract.md §5）
+     语义主色取 Obsidian 主题变量（第二参是浅色主题下的回落值）。 */
+  --wf-elbow-height: 19px;
+  --wf-line-color: var(--background-modifier-border-hover, var(--background-modifier-border));
+  --wf-dot-size: 14px;
+  --wf-status-bar-width: 3px;
+  --wf-status-todo: var(--text-muted, #7a7a7a); /* 空心圆用的灰环：黄底上要够深（≥3:1） */
+  --wf-status-doing: var(--color-blue, #2f80ed);
+  --wf-status-done: var(--color-green, #27ae60);
+  --wf-status-blocked: var(--color-red, #eb5757);
+  --wf-status-cancelled: var(--text-faint, #a0a0a0);
+
+  /* 方块阵 / 甘特：Phase 10 起方块阵的单行横条颜色 = 该主题给「第一个工作流」分到的甘特色
+     （c0）派生的一套明暗阶。这里只是 body 级回落值；真正生效的派生在下面
+     `.wf-theme[data-wf-theme]` 里（`var()` 在**声明所在元素**上求值，挂 body 上会算死默认色）。 */
+  --wf-heat-color: var(--color-purple, #8e44ad);
+  --wf-heat-muted: var(--background-modifier-border);
+  --wf-heat-l0: var(--wf-heat-muted);
+  --wf-heat-l1: color-mix(in srgb, var(--wf-heat-color) 25%, var(--background-primary));
+  --wf-heat-l2: color-mix(in srgb, var(--wf-heat-color) 45%, var(--background-primary));
+  --wf-heat-l3: color-mix(in srgb, var(--wf-heat-color) 70%, var(--background-primary));
+  --wf-heat-l4: var(--wf-heat-color);
+  --wf-gantt-color: var(--color-purple, #8e44ad);
+
+  /* Phase 8 / 10：甘特图按工作流着色 —— 每套主题 6 种时间色（`workflows[]` 顺序 → c0…c5，> 6 循环）。
+     Phase 10 起轨道分两套口径：这里的默认值 = **浅色系统**（浅底 + 深饱和高亮）；
+     暗色系统在 `body.theme-dark`（默认主题）与各主题的暗色块里覆盖成常暗底 + 深底可读色。 */
+  --wf-gantt-track-bg: #f2f0f6;
+  --wf-gantt-track-line: rgb(122 90 160 / 0.18);
+  --wf-gantt-c0: #7b3fa0;
+  --wf-gantt-c1: #2563eb;
+  --wf-gantt-c2: #15803d;
+  --wf-gantt-c3: #b45309;
+  --wf-gantt-c4: #be185d;
+  --wf-gantt-c5: #0f766e;
+
+  /* 计时器 / 字体 */
+  --wf-timer-bg: #000;
+  --wf-timer-fg: #fff;
+  --wf-timer-radius: 10px;
+  --wf-clock-font: var(--font-monospace);
+  --wf-title-font: inherit;
+  --wf-body-font: inherit;
+  --wf-title-font-tech: "Bahnschrift", "Consolas", "PingFang SC", "Microsoft YaHei", sans-serif;
+
+  /* Phase 10：间距 token —— nature / magazine 覆盖成更大值（更宽松、更有呼吸感）。
+     只影响内边距与卡片间距，不改 DOM 结构。 */
+  --wf-lane-pad: 10px 3px 12px;
+  --wf-lane-gap: 1px;
+  --wf-card-pad: 12px 10px 10px 13px;
+  --wf-block-margin: 10px 0 6px;
+
+  /* Phase 16：主体骨架（左侧小工具侧边栏 + 右侧工作区 / 多工作流横向分栏 / 弹窗宽度） */
+  --wf-sidebar-width: 24px;
+  --wf-main-gap: 12px;
+  --wf-column-gap: 16px;
+  --wf-popup-width: 560px;
+
+  /* Phase 16.1/16.2：渲染区（= 有渲染区代码的那篇笔记的页面列）宽度上限，唯一真源。
+     挂 body：页面行宽规则写在 `.markdown-preview-view` 上，那是 `.wf-theme` 的**祖先**，
+     拿不到挂在 `.wf-theme` 上的值。 */
+  --wf-view-max-width: 1400px;
+}
+
+/* 默认主题的暗色差值：深底上直接铺原黄会刺眼且与主题割裂 → 换成深琥珀。
+   各主题在自己的 `body.theme-dark` 块里覆盖 --wf-card-open-bg（否则会继承到这里）。
+   两个选择器覆盖 `.theme-dark` 挂 body / 挂 html 两种 Obsidian 版本。 */
+body.theme-dark,
+:root.theme-dark body {
+  --wf-card-open-bg: color-mix(in srgb, #ffe9a8 22%, var(--background-primary));
+  /* Phase 10：暗色系统的甘特轨道保持常暗底 + 深底可读的 6 色（默认主题口径） */
+  --wf-gantt-track-bg: #1e1e24;
+  --wf-gantt-track-line: rgb(255 255 255 / 0.16);
+  --wf-gantt-c0: #9b59b6;
+  --wf-gantt-c1: #3b82f6;
+  --wf-gantt-c2: #22c55e;
+  --wf-gantt-c3: #f59e0b;
+  --wf-gantt-c4: #ec4899;
+  --wf-gantt-c5: #14b8a6;
+}
+
+/* ---- 通用 ---- */
+
+/*
+ * Phase 16 ①（v0.16.2 定稿）：渲染区宽度 = `min(1400px, 页面列宽)`，页面列宽随窗口伸缩。
+ *
+ * 两版教训（都别再走回去）：
+ *   - v0.16.0：用**对称负 margin**把渲染区撑出页面列 → 超出部分被祖先裁剪容器切掉（两侧看不见）；
+ *   - v0.16.1：顺手改了 Obsidian 自己的 `.markdown-preview-sizer` / `.cm-sizer` / `.cm-content`
+ *     （`max-width: min(100%, …)` + `margin: auto`）→ 实时预览的列被压塌，正文变成「一行一个字」，
+ *     渲染区也一起看不见。
+ * 现在只做两件事，且**绝不改 Obsidian 自己的类**（只改它官方提供的行宽变量）：
+ *   1) 放开「页面上真有渲染区」的那篇笔记的 `--file-line-width`（Obsidian 行宽变量，默认 700px）
+ *      → 页面列随窗口伸缩、封顶 `--wf-view-max-width`（1400px，唯一真源）；
+ *   2) 渲染区自己 `width: 100%` + `max-width: 1400px` + `margin: auto` 居中 —— 只在自己那一列里，
+ *      不越界（所以不会被裁），也不测量（所以跟窗口天然同步）。
+ * ⚠️ 绝不用 `100vw`（含侧栏 / 侧面板，分屏时会压到隔壁 pane）。
+ */
+.wf-view {
+  width: 100%;
+  max-width: var(--wf-view-max-width, 1400px);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* ---- 页面行宽（Phase 16 ②）：只有「页面上真有渲染区」的 md 视图放开 ---- */
+/*
+ * `:has()` 随 DOM 自动失效：换文件 / 关掉预览块后规则立刻不再命中，不需要 JS 打标记再清理标记。
+ * 没有渲染区的笔记**一行都没变**，仍按用户自己的「缩减栏宽」设置走；
+ * 笔记嵌入里的预览视图若也渲染了渲染区，会同样放开（上限 1400，实际宽度仍被嵌入容器夹住）。
+ * 前面加 `body` 只为提一点特异性（主题可能把 `--file-line-width` 也写在视图根上，谁后写谁生效）；
+ * 不改任何布局属性，因此没有 v0.16.1 那种「把正文列压塌」的风险。
+ */
+body .markdown-preview-view:has(.wf-view),
+body .markdown-source-view:has(.wf-view) {
+  --file-line-width: var(--wf-view-max-width, 1400px);
+}
+
+.wf-hint {
+  padding: 4px 0;
+  color: var(--text-muted);
+  font-size: 0.82em;
+}
+
+.wf-footer {
+  margin-top: 12px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--background-modifier-border);
+  color: var(--text-muted);
+  font-size: 0.78em;
+}
+
+/* ---- ① 状态总览（Phase 16：三行固定顺序 —— 主题 / 计时 / 统计） ---- */
+
+.wf-overview {
+  padding: 20px 24px 35px;
+  margin: 4px 3px 24px;
+  border: 1px solid var(--wf-panel-border);
+  border-radius: var(--wf-panel-radius);
+  background: var(--wf-panel-bg);
+  font-family: var(--wf-body-font);
+}
+
+/* ---- ⓪ 引导性大标题（Phase 18 ③）：渲染区最顶部的一行 ----
+
+   默认主题 = 裸装基线（只加大字号 / 加粗）；其余 8 套在下面「主题差值」区里改字体 / 装饰。
+   文案是真实 DOM 文本（用户可在设置里改），所以这里只用文字级样式，不加内容伪元素的地方。 */
+
+.wf-app-title {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;                    /* 图标与文字间距 */
+  margin: 30px 0px 16px ;
+  padding-left: 20px;
+  font-family: var(--wf-title-font);
+  font-size: 2em;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: 0.01em;
+  color: var(--text-normal);
+}
+
+/* 第 1 行现在是主题按钮组：它自带的分隔线 / 上间距是「块尾」口径，首行要把这两样去掉 */
+.wf-overview > .wf-theme-switch:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.wf-overview-line {
+  /* 第 3 行 = 统计文本（正计时器在第 2 行、主题在第 1 行）：整行居中 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 1.12em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-normal);
+}
+
+/* ---- ② 主体（Phase 16）：左侧小工具侧边栏 + 右侧工作区 ---- */
+
+.wf-main {
+  display: flex;
+  flex-direction: column;     /* 新增：row → column */
+  align-items: stretch;       /* 原来是 flex-start，column 下要让 body 撑满宽度 */
+  gap: var(--wf-main-gap);
+  margin-left: 12px;
+  margin-right: 12px;
+}
+
+.wf-main-body {
+  /* 必修：没有 min-width:0，栏内的 max-content 会把父级撑宽 → 出现页面级横向滚动 */
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.wf-sidebar {
+  position: static;
+  top: 4px;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: row;
+  align-items: center;        /* 横排下 stretch 没意义，改 center 更稳 */
+  justify-content: center;    /* 新增：按钮组在整行内水平居中 */
+  gap: 32px;                  /* 4 → 12，按钮间距加大 */
+  padding: 6px 12px;          /* 上下 6、左右 12，四周略松 */
+  background: transparent;
+  border: none;
+  width: 100%;                /* fit-content → 100%，撑满父级才能"居中" */
+  box-sizing: border-box;     /* 防止 padding 把宽度顶出父级 */
+}
+
+.wf-sidebar-btn {
+  width: var(--wf-sidebar-width);
+  height: var(--wf-sidebar-width);
+  padding: 0;
+  border: none;                    /* 去掉各自的框 */
+  border-radius: var(--wf-radius-btn);
+  background: transparent;         /* 去掉各自的背景 */
+  box-shadow: none;
+  cursor: pointer;
+  font-size: 0.95em;
+  line-height: 1;
+
+  /* 让图标真正居中（svg 时 line-height 不够用） */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  transition: background 120ms, color 120ms;
+}
+
+.wf-sidebar-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.wf-sidebar-btn .wf-widget-icon svg {
+  width: 1.1em;
+  height: 1.1em;
+  stroke-width: 1.8;   /* 可选，lucide 默认 2，细一点更精致 */
+}
+
+.wf-sidebar-btn:hover {
+  background: var(--interactive-hover);
+}
+
+/* 强制重置标准属性，让 webkit 样式生效 */
+.wf-active-columns {
+  scrollbar-width: auto !important;
+}
+
+/* 多工作流横向分栏：每栏宽度由内容决定（max-content），装不下时先由外层滚动，再由栏内滚动 */
+.wf-active-columns {
+  display: flex;
+  align-items: flex-start;
+  gap: 3px;
+  overflow-x: auto; /* 多栏合计超宽 → 外层横向滚动（栏目本身仍按 width: max-content 排） */
+  padding-bottom: 6px; /* 给外层横向滚动条留位，别压住泳道底边 */
+}
+
+/* 2. 定义滚动条整体高度 */
+.wf-active-columns::-webkit-scrollbar {
+  height: 34px !important; /* 控制滚动条的粗细 */
+}
+
+/* 3. 滚动条轨道（背景） */
+.wf-active-columns::-webkit-scrollbar-track {
+  background: var(--background-secondary); /* 轨道底色，可以用 transparent */
+  border-radius: 8px !important; /* 圆角轨道 */
+}
+
+/* 4. 滚动条滑块（把手） */
+.wf-active-columns::-webkit-scrollbar-thumb {
+  border-radius: 8px !important; /* 圆角滑块 */
+  border: 3px solid transparent !important; /* 魔法：用透明边框让滑块比轨道细一点，不觉得臃肿 */
+  background-clip: padding-box !important; /* 让背景只画在内容区 */
+}
+
+/* 6. （可选）去掉两端的小按钮（Windows 系统可能会出现） */
+.wf-active-columns::-webkit-scrollbar-button {
+  display: none !important;
+}
+
+.wf-column {
+  /* 自身不画边框 / 底色：视觉全部由内层 .wf-lane 提供（9 套主题的选择器只认 .wf-lane） */
+  flex: 0 0 auto;
+  width: max-content;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Phase 17：分栏之间用「非首栏的左边框」当分隔线（颜色走主题的连线色），
+   不再靠额外元素或整块底色差异 —— 长泳道各自滚动时左右两栏不会糊在一起。
+   Phase 18 ⑥：`.wf-lane` 自己改成 `border: 0` 后不再有默认边框样式 → 这里显式写全三个子属性。 */
+.wf-column + .wf-column .wf-lane {
+  border-left-width: 3px;
+  border-left-style: solid;
+  border-left-color: var(--wf-line-color, var(--wf-panel-border));
+}
+
+/* ---- 小工具弹窗（Phase 16 ③）：挂 body 的固定浮层，只有「×」能关 ----
+   Phase 18 ①：外面多一层全屏遮罩 `.wf-widget-overlay`（半透明 + 吃掉下层点击）。
+   层级：遮罩 9997 < 弹窗 9998 < 右键菜单 9999 < 甘特 tooltip 10000 < emo 浮层 10001/10002。 */
+
+.wf-widget-overlay {
+  position: fixed;
+  inset: 0;
+  /* 低于弹窗（9998）：整块遮罩只当背板，再往下的笔记 / 侧边栏都点不到 */
+  z-index: 9997;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 0.35);
+}
+
+.wf-widget-popup {
+  /* 居中交给遮罩的 flex；弹窗自己只负责尺寸与外观 */
+  position: relative;
+  z-index: 9998;
+  display: flex;
+  flex-direction: column;
+  width: var(--wf-popup-width, 560px);
+  max-width: 92vw;
+  max-height: 80vh;
+  border: 1px solid var(--wf-panel-border);
+  border-radius: var(--wf-panel-radius);
+  background: var(--wf-panel-bg);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.32);
+  font-family: var(--wf-body-font);
+}
+
+.wf-widget-popup--gantt {
+  width: min(700px, 92vw);
+}
+
+/* Phase 19 M2：4 象限图 —— 左侧 16 分区平面 + 右侧预览，比默认弹窗宽 */
+.wf-widget-popup--quadrant {
+  width: min(880px, 94vw);
+}
+
+/* Phase 19 M3 / 补充契约⑥b：365 天 plot —— 三栏（列表 | 折线 | 数据点），弹窗再加宽 */
+.wf-widget-popup--plot {
+  width: min(1180px, 96vw);
+}
+
+/* Phase 18 ④ / Phase 19 M1 ③：365 天 emo —— 弹窗铺满整个界面（全屏画布）；
+   配色在下面的 `.wf-emo-*` 里自成一套，不进 `[data-wf-theme]` */
+.wf-widget-popup--emo {
+  position: fixed;
+  inset: 0;
+  width: auto;
+  max-width: none;
+  height: auto;
+  max-height: none;
+  border: none;
+  border-radius: 0;
+  background: var(--wf-emo-veil);
+  color: var(--wf-emo-ink);
+  box-shadow: none;
+}
+
+/* chrome：标题条留在顶部（标题 + ×），内容区自己滚 / 不滚；
+   底色跟画布一样半透明（加轻磨砂保证标题可读） */
+.wf-widget-popup--emo .wf-widget-popup-head {
+  position: relative;
+  z-index: 2;
+  border-bottom: 1px solid var(--wf-emo-line);
+  background: var(--wf-emo-veil);
+  -webkit-backdrop-filter: blur(6px) saturate(1.1);
+  backdrop-filter: blur(6px) saturate(1.1);
+}
+
+.wf-widget-popup--emo .wf-widget-popup-body {
+  overflow: hidden;
+  padding: 0;
+}
+
+.wf-widget-popup-head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 8px 14px;
+  border-bottom: 1px solid var(--wf-panel-border);
+}
+
+.wf-widget-popup-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  font-family: var(--wf-title-font);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wf-widget-popup-close {
+  flex: 0 0 auto;
+  width: auto;
+  height: auto;
+  padding: 0 6px;
+  border: none;
+  border-radius: var(--wf-radius-btn);
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 1.1em;
+  line-height: 1.2;
+}
+
+.wf-widget-popup-close:hover {
+  background: var(--interactive-hover);
+  color: var(--text-normal);
+}
+
+.wf-widget-popup-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 10px 14px 12px;
+}
+
+.wf-widget-placeholder {
+  padding: 18px 4px;
+  color: var(--text-faint);
+  font-size: 0.86em;
+  text-align: center;
+}
+
+/* ==========================================================================
+   Phase 18 ③ · 引导性大标题的 9 套主题差值
+
+   只用文字级属性（字体 / 字距 / 颜色 / 描边 / 渐变文字），不加 DOM、不写内联样式。
+   默认主题不在这里出现 —— 它保持上面 `.wf-app-title` 的裸装基线。
+   ========================================================================== */
+
+/* 科技风：等宽字 + 霓虹描边（深色系统下更亮） */
+.wf-theme[data-wf-theme="tech"] .wf-app-title {
+  color: #007a8a;
+  font-family: "Bahnschrift", "Consolas", "PingFang SC", "Microsoft YaHei", monospace; 
+  font-size: 2em;
+  letter-spacing: 0.14em;
+  text-shadow: 0 0 1px rgb(0 240 255 / 0.5);
+  text-transform: uppercase;
+}
+
+.theme-dark .wf-theme[data-wf-theme="tech"] .wf-app-title,
+:root.theme-dark .wf-theme[data-wf-theme="tech"] .wf-app-title {
+  color: #00f0ff;
+  text-shadow: 0 0 8px rgb(0 240 255 / 0.55);
+}
+
+/* 自然风：大地色 + 衬线（手工纸的调子） */
+.wf-theme[data-wf-theme="nature"] .wf-app-title {
+  color: #6b5a3a;
+  font-family: Georgia, "Songti SC", "Noto Serif SC", serif;
+  font-size: 2em;
+  letter-spacing: 0.04em;
+}
+
+.theme-dark .wf-theme[data-wf-theme="nature"] .wf-app-title,
+:root.theme-dark .wf-theme[data-wf-theme="nature"] .wf-app-title {
+  color: #d8c9a3;
+}
+
+/* 杂志风：全衬线 + 大留白 + 顶部细线（封面标题的口径） */
+.wf-theme[data-wf-theme="magazine"] .wf-app-title {
+  padding-top: 6px;
+  border-bottom: 3px solid #1a1a1a;
+  color: #1a1a1a;
+  font-family: Georgia, "Times New Roman", "Songti SC", serif;
+  font-size: 2em;
+  letter-spacing: -0.01em;
+}
+
+.theme-dark .wf-theme[data-wf-theme="magazine"] .wf-app-title,
+:root.theme-dark .wf-theme[data-wf-theme="magazine"] .wf-app-title {
+  border-bottom-color: #f0f0f0;
+  color: #f5f5f5;
+}
+
+/* 复古风：斜体 + 暖褐 + 双层阴影（手写花体的近似） */
+.wf-theme[data-wf-theme="retro"] .wf-app-title {
+  color: #5d4228;
+  font-family: Georgia, "Palatino Linotype", serif;
+  font-size: 2em;
+  font-style: italic;
+  letter-spacing: 0.03em;
+  text-shadow: 1px 1px 0 rgb(255 255 255 / 0.6), 2px 2px 0 rgb(93 66 40 / 0.18);
+}
+
+.theme-dark .wf-theme[data-wf-theme="retro"] .wf-app-title,
+:root.theme-dark .wf-theme[data-wf-theme="retro"] .wf-app-title {
+  color: #f0d9b5;
+  text-shadow: 1px 1px 0 rgb(0 0 0 / 0.45);
+}
+/* ---- 浅色系统（默认，紫+粉） ---- */
+.theme-light .wf-theme[data-wf-theme="clay"] .wf-app-title,
+:root.theme-light .wf-theme[data-wf-theme="clay"] .wf-app-title {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 0;
+  background: transparent;
+  border: none;
+  
+  font-size: 2em;
+  font-weight: 900;
+  letter-spacing: 0.08em; /* 拉开字距，显得圆润 */
+  
+  /* 核心颜色：鲜艳的马卡龙紫 */
+  color: #5d3883; 
+  
+  /* 软糯糖果光影（不要黑色！） */
+  text-shadow: 
+    
+    /* ② 底部厚度（用深一号的粉紫，只堆 2 层，绝不显高） */
+    0 2px 0 #9d50e8,
+    0 4px 0 #8a3bd6,
+    
+    /* ③ 外部柔和投影（粉色发光，增加糖果感） */
+    0 8px 12px rgba(184, 115, 255, 0.4);
+    
+  /* 终极亮闪闪效果：一层极细的粉色外发光 */
+  filter: drop-shadow(0 0 4px rgba(255, 182, 193, 0.6));
+  margin-bottom: 6px;
+}
+
+/* ---- 深色系统（暗色下用荧光粉紫） ---- */
+.theme-dark .wf-theme[data-wf-theme="clay"] .wf-app-title {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 0;
+  background: transparent;
+  border: none;
+  
+  font-size: 2em;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  
+  /* 暗色下用发光的糖果浅粉 */
+  color: #c785bc; 
+  
+  text-shadow: 
+    
+    0 2px 0 #e8669d,
+    0 4px 0 #c74377,
+    
+    0 8px 12px rgba(255, 158, 199, 0.3);
+  margin-bottom: 6px;
+}
+
+/* 网页风（web）：蓝字 + 下划线 = 「可点的链接」那种年代感 */
+
+
+/* 1. 基础网页风样式（浅色） */
+/*.wf-theme[data-wf-theme="web"] .wf-app-title {
+  color: #0000ee;
+  font-family: "Times New Roman", Times, serif;
+  font-size: 2em;
+  text-decoration: underline;
+  display: flex;
+  align-items: center;       
+  justify-content: center;
+  gap: 8px;                  
+}
+
+.theme-dark .wf-theme[data-wf-theme="web"] .wf-app-title,
+:root.theme-dark .wf-theme[data-wf-theme="web"] .wf-app-title {
+  color: #8ab4ff;
+}
+
+.wf-theme[data-wf-theme="web"] .wf-app-title::before,
+.wf-theme[data-wf-theme="web"] .wf-app-title::after {
+  font-family: "Consolas", "Monaco", monospace;
+  font-size: 1em;           
+  color: var(--text-muted);  
+  text-decoration: none;     
+  opacity: 0.7;              
+}
+
+.wf-theme[data-wf-theme="web"] .wf-app-title::before {
+  content: "<title>";
+}
+
+.wf-theme[data-wf-theme="web"] .wf-app-title::after {
+  content: "</title>";
+}
+
+.theme-dark .wf-theme[data-wf-theme="web"] .wf-app-title::before,
+.theme-dark .wf-theme[data-wf-theme="web"] .wf-app-title::after {
+  color: #8ab4ff;
+  opacity: 0.5;
+}*/
+
+/* 1. 基础网页风样式（浅色） */
+.wf-theme[data-wf-theme="web"] .wf-app-title {
+  color: #0000ee;
+  font-family: "Times New Roman", Times, serif;
+  font-size: 2em;
+  
+  /* 取消字体自带的下划线 */
+  text-decoration: none; 
+  
+  /* 用底边框实现连续下划线，颜色自动跟随当前文字颜色 */
+  border-bottom: 2px solid currentColor; 
+  padding-bottom: 1px; /* 控制下划线和文字的垂直距离，不贴底 */
+  
+  /* 布局：居中对齐 */
+  display: flex;
+  align-items: baseline; /* 基线对齐，让英文和标签看起来更平稳 */
+  justify-content: center;
+  gap: 8px;
+  
+  /* 关键：让线只包住文字，且整个块居中 */
+  width: fit-content; 
+  margin: 0 ;   
+  margin-top: 24px;     /* 距离上方模块的距离 */
+  margin-bottom: 20px;  /* 距离下方模块的距离 */
+}
+
+/* 2. 深色模式兼容（颜色变了，底边框会自动变） */
+.theme-dark .wf-theme[data-wf-theme="web"] .wf-app-title,
+:root.theme-dark .wf-theme[data-wf-theme="web"] .wf-app-title {
+  color: #7aa7ff;
+}
+
+/* 3. 仿照 HTML 标签的前后伪元素 */
+.wf-theme[data-wf-theme="web"] .wf-app-title::before,
+.wf-theme[data-wf-theme="web"] .wf-app-title::after {
+  font-family: "Times New Roman", Times, serif;
+  font-size: 1em;
+  text-decoration: none;           
+}
+
+/* 4. 插入标签内容 */
+.wf-theme[data-wf-theme="web"] .wf-app-title::before {
+  content: "<title>";
+}
+
+.wf-theme[data-wf-theme="web"] .wf-app-title::after {
+  content: "</title>";
+}
+
+/* 清新风：渐变文字（蓝 → 绿，与马卡龙底色同一套调子） */
+/*
+.wf-theme[data-wf-theme="fresh"] .wf-app-title {
+  background: linear-gradient(90deg, #1f8fd6, #2f8f74 70%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-size: 2em;
+  letter-spacing: 0.05em;
+}
+
+.theme-dark .wf-theme[data-wf-theme="fresh"] .wf-app-title,
+:root.theme-dark .wf-theme[data-wf-theme="fresh"] .wf-app-title {
+  background: linear-gradient(90deg, #63c1ff, #4fd6a8 70%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+*/
+/* 少女风：缎带（左右各一段渐变飘带，纯伪元素） */
+/*
+.wf-theme[data-wf-theme="shoujo"] .wf-app-title {
+  text-align: center;
+  display: inline-flex;     
+  position: relative;
+  padding: 2px 16px;
+  color: #ee97b8;
+  font-size: 2em;
+  letter-spacing: 0.06em;
+}
+*/
+.wf-theme[data-wf-theme="shoujo"] .wf-app-title {
+  text-align: center;
+  display: inline-flex;
+  position: relative;
+  padding: 2px 16px;
+  font-size: 2em;
+  letter-spacing: 0.06em;
+
+  /* --- 核心：粉色金属渐变与弧光 --- */
+  background: linear-gradient(
+    135deg, 
+    #ffb3c6 0%,       /* 浅粉底 */
+    #ffe4ef 18%,      /* 提亮 */
+    #f0d2d2 25%,      /* 极强的弧光高光带 */
+    #ff758f 45%,      /* 过渡到主粉色 */
+    #ef3469 50%,      /* 金属暗部转折线（深玫瑰红） */
+    #ff758f 55%,      /* 底部反光 */
+    #f6d7d7 75%,      /* 第二道侧边反光 */
+    #ffb3c6 100%      /* 收回浅粉 */
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  
+  /* 使用 drop-shadow 而不是 text-shadow，因为文字已经被裁切透明 */
+  /* 给文字增加一点金属浮雕的厚度感 */
+  filter: drop-shadow(0px 2px 2px rgba(201, 24, 74, 0.4));
+}
+
+/* 保持伪元素的粉色花朵不变 */
+.wf-theme[data-wf-theme="shoujo"] .wf-app-title::before,
+.wf-theme[data-wf-theme="shoujo"] .wf-app-title::after {
+  content: "✿";
+  margin: 0 8px;
+  color: #ff9ec7;
+  font-size: 0.7em;
+  vertical-align: middle;
+  /* 确保花朵不被渐变背景裁切影响 */
+  -webkit-text-fill-color: #ff9ec7; 
+}
+
+.theme-dark .wf-theme[data-wf-theme="shoujo"] .wf-app-title,
+:root.theme-dark .wf-theme[data-wf-theme="shoujo"] .wf-app-title {
+  background: linear-gradient(
+    135deg, 
+    #ff7ea5 0%,       
+    #ffb3c6 20%,      
+    #ffffff 35%,      /* 高光带更宽更亮 */
+    #ff4d79 48%,      
+    #de3f6c 55%,      /* 暗部更深，反光强烈 */
+    #ff4d79 62%,      
+    #ffffff 75%,      
+    #ff7ea5 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0px 2px 4px rgba(255, 77, 121, 0.5));
+}
+
+/*.wf-theme[data-wf-theme="shoujo"] .wf-app-title::before,
+.wf-theme[data-wf-theme="shoujo"] .wf-app-title::after {
+  content: "✿";
+  margin: 0 8px;
+  color: #ff9ec7;
+  font-size: 0.7em;
+  vertical-align: middle;
+}*/
+
+/* ---- ② 正在进行：泳道 ---- */
+
+
+
+.wf-block-title {
+  margin: var(--wf-block-margin, 10px 0 6px);
+  margin-left: 10px;          /* 新增：只推左边 */
+  margin-bottom: 8px;        /* 标题行到泳道的距离，改这个 */
+  font-family: var(--wf-title-font);
+  font-weight: 600;
+}
+
+.wf-lane {
+  /* Phase 6：所有 --wf-* token 已上移到 `body`（总览 / 方块阵 / 甘特 / 计时器 / 归档块 /
+     右键菜单 / Modal 都不在泳道里，只有根级才能一处生效）。这里只留组件骨架。
+     Phase 18 ⑥：去掉「卡片式外壳」（边框 / 圆角 / 底色）—— 泳道直接铺在工作区上，
+     分栏之间只靠下一段的左边框当分隔线。纹理类主题的 background-image 仍可挂这里。 */
+  margin-bottom: var(--wf-lane-gap, 5px);
+  padding: var(--wf-lane-pad, 10px 12px 12px);
+  width: fit-content;      /* 新增：宽度跟随内容，不溢出 */
+  max-width: 100%;         /* 不超过父级，超了交给外层 */
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+
+ /*  overflow-x: auto; 嵌套深、列多时横向滚动 */
+
+
+.wf-lane-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;          /* ① 允许换行 */
+  gap: 10px;
+  padding-left: 20px;  
+  margin-bottom: 7px;
+  contain: inline-size;     /* ② 关键：head 的 max-content 不再撑开 .wf-lane */
+  min-width: 0;             /* ③ flex 上下文里允许收缩 */
+}
+
+/* Phase 16：分栏栏头的颜色方块（与甘特图同色）—— 基线对齐会把它压低，单独垂直居中 */
+.wf-lane-head > .wf-lane-color {
+  align-self: center;
+}
+
+.wf-lane-title {
+  font-family: var(--wf-title-font);
+  font-weight: 600;
+  white-space: normal;      /* 允许换行 */
+  overflow-wrap: anywhere;  /* 长单词/无空格串也能断行 */
+  word-break: break-word;   /* 兼容兜底 */
+  hyphens: auto;            /* 可选：自动连字符 */
+}
+
+.wf-lane-meta {
+  font-size: 0.78em;
+  color: var(--text-muted);
+}
+
+/* Phase 17：泳道正文区自带纵向滚动 —— 栏头固定不动，只有正文滚动，**每条泳道一条滚动条**。
+   高度由设置面板写入根元素变量 `--wf-lane-max-height`（默认 800px，CSS snippet 仍可覆盖）。
+   横向仍交给外层 `.wf-lane`（deep tree 时栏内横滚），两个方向互不干扰。 */
+.wf-lane-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: max-content;
+  max-height: var(--wf-lane-max-height, 800px);
+  overflow-y: auto;
+  padding: 8px 20px 3px 20px;   
+}
+
+/* ---- 列 / 行 / 连线 ----
+   列内先放卡片，再放子节点行；行内的第 1 个单元靠左（= 同列下一行），
+   其余单元带左内边距（= 右开一列）；连线用伪元素画在单元顶部。 */
+
+.wf-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.wf-row {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+}
+
+.wf-row.wf-collapsed {
+  display: none;
+}
+
+.wf-cell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.wf-cell--side {
+  padding-left: 24px;
+}
+
+.wf-elbow {
+  width: 2px;
+  height: var(--wf-elbow-height);
+  background: var(--wf-line-color);
+}
+
+/* 侧列：补左半截横线；有后续兄弟：补右半截横线（两半相接 = 完整的横向主干） */
+.wf-cell--side::before,
+.wf-cell--has-next::after {
+  content: "";
+  position: absolute;
+  top: calc(var(--wf-elbow-height) / 2 - 1px);
+  height: 2px;
+  background: var(--wf-line-color);
+}
+
+.wf-cell--side::before {
+  left: 0;
+  right: 50%;
+}
+
+.wf-cell--has-next::after {
+  left: 50%;
+  right: 0;
+}
+
+/* ---- 卡片（Notion 风：干净、圆角） ---- */
+
+.wf-card {
+  position: relative; /* 状态色条 (::before) 的定位基准 */
+  box-sizing: border-box;
+  /* Phase 18 ⑦：宽度由设置（根元素 `--wf-card-width`）决定，未设置时回落 200px */
+  width: var(--wf-card-width, 200px);
+  padding: var(--wf-card-pad, 7px 10px 7px 13px); /* 左内边距默认多 3px = 给状态色条留位（不撑宽卡片） */
+  border: 1.5px solid var(--wf-card-border);
+  border-style: dashed; /* 无资料 → 虚线，见 .wf-card--solid */
+  border-radius: var(--wf-radius-card);
+  color: var(--text-normal); /* 文字色交给主题：暗色主题下自动变浅字 */
+  font-family: var(--wf-body-font);
+  font-size: var(--wf-card-font-size);
+  line-height: 1.35;
+  cursor: default;
+  box-shadow: var(--wf-card-shadow);
+}
+
+/* 未完成 → 黄底（浅色主题）；暗色主题下换成深琥珀，见顶部 body.theme-dark */
+.wf-card--open {
+  background: var(--wf-card-open-bg, #ffe9a8);
+}
+
+.wf-card--done {
+  background: var(--wf-card-done-bg); /* 已完成 → 白底（浅色主题与 #ffffff 同值；暗色主题下自动跟主题深底） */
+}
+
+.wf-card--solid {
+  border-style: solid; /* 有 links → 实线 */
+}
+
+.wf-card--dashed {
+  border-style: dashed;
+}
+
+.wf-card--bold {
+  font-weight: 700; /* importance = 5 */
+}
+
+/* ---- 状态色（契约 §4/§5：卡片左侧 3px 色条 + 边色；todo 不画色条，留白 = 还没动作） ---- */
+
+.wf-card--doing {
+  border-color: var(--wf-status-doing, #2f80ed);
+}
+
+.wf-card--blocked {
+  border-color: var(--wf-status-blocked, #eb5757);
+}
+.wf-card--doing::before,
+.wf-card--done::before,
+.wf-card--blocked::before,
+.wf-card--cancelled::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%; /* 1. 定位到一半的位置 */
+  transform: translateY(-50%); /* 2. 自身往上提一半，实现完美垂直居中 */
+  height: var(--wf-status-bar-height, 100%); /* 3. 高度走变量，默认100%（撑满） */
+  width: var(--wf-status-bar-width, 3px);
+  border-radius: inherit; 
+  background: var(--wf-status-doing, #2f80ed);
+}
+
+ /* border-radius: calc(var(--wf-radius-card) - 2px) 0 0 calc(var(--wf-radius-card) - 2px); /* 贴合卡片圆角（默认 10 - 2 = 原 8px） */
+.wf-card--done::before {
+  background: var(--wf-status-done, #27ae60);
+}
+
+.wf-card--blocked::before {
+  background: var(--wf-status-blocked, #eb5757);
+}
+
+/* 已取消：不再是整卡 opacity（那会把圆点一起冲淡），改成「底色去饱和 + 标题删除线 + 灰条」 */
+.wf-card--cancelled::before {
+  background: var(--wf-status-cancelled, #a0a0a0);
+}
+
+.wf-card--open.wf-card--cancelled {
+  background: color-mix(in srgb, var(--wf-status-cancelled, #a0a0a0) 12%, var(--background-primary));
+}
+
+.wf-card--cancelled .wf-card-title,
+.wf-card--cancelled .wf-card-title:hover {
+  text-decoration: line-through; /* 明确写 hover：否则会被后面的 .wf-card-title:hover 的 underline 顶掉 */
+  opacity: 0.75;
+}
+
+.wf-card-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.wf-caret {
+  width: 12px;
+  opacity: 0.6;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* ---- 状态圆点（契约 §5）：CSS 画的圆，尺寸走 --wf-dot-size（默认 14px，可用变量调大）；
+   形状冗余（空心/实心）→ 灰度或不看颜色也能区分；颜色一律来自 --wf-status-* 变量 ---- */
+
+.wf-dot {
+  display: inline-block;
+  flex: 0 0 auto; /* 不被长标题挤压 */
+  box-sizing: border-box;
+  width: var(--wf-dot-size, 14px);
+  height: var(--wf-dot-size, 14px);
+  border-radius: 50%;
+  background: var(--background-primary); /* 浅色底托：圆点色不再直接压在黄底上（对比度 ≥3:1） */
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 12%);
+}
+
+/* 未开始：空心圆（"还没点"） */
+.wf-dot-todo {
+  background: var(--background-primary);
+  border: 2px solid var(--wf-status-todo, #7a7a7a);
+}
+
+.wf-dot-doing {
+  background: var(--wf-status-doing, #2f80ed);
+}
+
+.wf-dot-done {
+  background: var(--wf-status-done, #27ae60);
+}
+
+.wf-dot-blocked {
+  background: var(--wf-status-blocked, #eb5757);
+}
+
+/* 已取消：实心灰点（与 todo 的空心区分开；配合卡片的删除线标题） */
+.wf-dot-cancelled {
+  background: var(--wf-status-cancelled, #a0a0a0);
+}
+
+.wf-card-title {
+  font-family: var(--wf-title-font);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.wf-card-title:hover {
+  text-decoration: underline;
+}
+
+.wf-card-meta {
+  margin-top: 4px;
+  font-size: 0.76em;
+  color: var(--text-muted);
+}
+
+.wf-card-summary {
+  margin-top: 3px;
+  font-size: 0.8em;
+  color: var(--text-normal);
+  opacity: 0.85;
+}
+
+/*
+ * Phase 17：卡片第 3 段（时间信息）—— 「已经过：x天 · 距结束：x天」用中性小字，
+ * 等宽数字避免秒级重绘时抖动。
+ * Phase 18 ⑧：done 节点把三句拼在**同一行**（`span.wf-card-part` + `span.wf-card-sep`），
+ * 只有中间那句 `.wf-card-time` 负责上色 —— 因此行内那份不该再自带行级排版。
+ */
+.wf-card-line {
+  margin-top: 3px;
+  font-size: 0.8em;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * v0.7 §⑨-5：已完成节点的「已完成时间」——
+ * 高亮用主题里的「完成」色（每套主题都有自己的绿），等宽数字避免跳动。
+ */
+.wf-card-time {
+  margin-top: 3px;
+  font-size: 0.8em;
+  font-weight: 600;
+  color: var(--wf-status-done, var(--text-accent));
+  font-variant-numeric: tabular-nums;
+}
+
+/* Phase 18 ⑧：行内的「已完成时间」只上色，外边距 / 字号跟行保持一致（行内 span 也不该有块级外边距） */
+.wf-card-line .wf-card-time {
+  margin-top: 0;
+  font-size: inherit;
+  font-weight: 600;
+}
+
+/* ---- ③ 已完成流 / 已取消流折叠区 ----
+   Phase 14：这一块的折叠手柄（`.wf-fold-title`）与当时的 ③ 已归档块（`.wf-archive-title`，
+   Phase 16 已随弹窗改造删除）走同一套写法 —— 隐藏浏览器原生三角、改自绘 `▸ / ▾`，
+   字号同为 0.9em、同一 `gap: 4px`，两处折叠图标因此一样大。 */
+
+.wf-fold {
+  margin: 6px 0;
+  padding: 4px 10px 6px;
+  border: 1px solid var(--wf-panel-border);
+  border-radius: var(--wf-panel-radius);
+  background: var(--wf-panel-bg);
+  font-family: var(--wf-body-font);
+}
+
+.wf-fold-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  font-size: 0.9em;
+  font-weight: 600;
+  list-style: none; /* 去掉浏览器默认三角，改用下面自绘箭头 */
+}
+
+.wf-fold-title::-webkit-details-marker {
+  display: none;
+}
+
+/* 自绘箭头：折叠 ▸ / 展开 ▾（只换 content，不新增 DOM） */
+.wf-fold-title::before {
+  content: "▸";
+  color: var(--text-faint);
+}
+
+.wf-fold[open] > .wf-fold-title::before {
+  content: "▾";
+}
+
+.wf-fold-title:hover {
+  color: var(--text-normal);
+}
+
+.wf-fold-body {
+  margin-top: 8px;
+}
+
+/* ---- ③ 已归档（Phase 16：整块搬进 📦 弹窗）
+       Phase 12 的 `<details>` 外壳（`.wf-archive` / `.wf-archive-title` / `.wf-archive-host`）
+       随折叠契约一起作废；分组与行的 class 一字不动，弹窗里的间距交给 `.wf-widget-popup-body`。 ---- */
+
+.wf-archive-group {
+  margin-top: 8px;
+}
+
+.wf-archive-group-title {
+  margin-bottom: 4px;
+  color: var(--text-muted);
+  font-size: 0.85em;
+  font-weight: 600;
+}
+
+.wf-archive-row {
+  padding: 3px 0 3px 8px;
+  border-left: 2px solid var(--wf-panel-border);
+}
+
+.wf-archive-row-title {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.wf-archive-row-meta {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 0.78em;
+}
+
+.wf-archive-row-link {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 0.8em;
+}
+
+.wf-archive-row-notes {
+  margin-top: 2px;
+  font-size: 0.8em;
+}
+
+.wf-archive-row-notes-title {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.9em;
+}
+
+.wf-archive-row-note {
+  padding: 2px 0 0 10px;
+  opacity: 0.85;
+  line-height: 1.45;
+}
+
+/* ---- 右键菜单 ---- */
+
+.wf-menu {
+  position: fixed;
+  z-index: 9999;
+  min-width: 200px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 4px 0;
+  border: 1px solid var(--wf-panel-border);
+  border-radius: 8px;
+  background: var(--wf-panel-bg);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28);
+  font-size: 13px;
+}
+
+.wf-menu-item {
+  padding: 6px 14px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.wf-menu-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+/* ---- 问题面板（有 error 时不渲染树，改摊问题清单） ---- */
+
+.wf-issue-box {
+  padding: 10px 12px;
+  border: 1px solid var(--text-error);
+  border-radius: var(--wf-panel-radius);
+  background: var(--wf-panel-bg);
+}
+
+.wf-issue-title {
+  margin-bottom: 6px;
+  font-weight: 600;
+  color: var(--text-error);
+}
+
+.wf-issue-pre {
+  max-height: 40vh;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 0.8em;
+}
+
+/* ==========================================================================
+   Phase 2 Modal（契约 §6）：四个右键入口的表单（资料 / 标记为 / 删除 / 归档）+ 分析结果窗
+   ========================================================================== */
+
+/* ---- 外壳 / 说明 ---- */
+
+.wfjson-modal {
+  --wfjson-input-height: 30px;
+}
+
+.wfjson-modal-hint {
+  margin: 4px 0 12px;
+  color: var(--text-muted);
+  font-size: 0.85em;
+  line-height: 1.45;
+}
+
+/* ---- 表单一行：标签在上、控件在下（textarea 除外） ---- */
+
+.wfjson-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.wfjson-field-label {
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+
+.wfjson-input {
+  box-sizing: border-box;
+  width: 100%;
+  height: var(--wfjson-input-height);
+}
+
+/* ---- 归档 Modal 的选填三段（Phase 4）：多行文本框 ---- */
+
+.wfjson-archive-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 54px;
+  padding: 6px 8px;
+  resize: vertical;
+  font-family: inherit;
+}
+
+/* ---- 资源模板行（契约 re0 §6.1）：类型下拉 + 插入按钮 ---- */
+
+.wfjson-template-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.wfjson-template-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--wfjson-input-height);
+}
+
+/* ---- links[] JSON 源码 ---- */
+
+.wfjson-links-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 190px;
+  padding: 8px 10px;
+  font-family: var(--font-monospace);
+  font-size: 0.85em;
+  line-height: 1.5;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+  resize: vertical;
+}
+
+/* ---- 就地错误框：空着就不占位（Modal 里常驻，只按内容显隐） ---- */
+
+.wfjson-modal-error:empty {
+  display: none;
+}
+
+.wfjson-modal-error:not(:empty) {
+  max-height: 30vh;
+  margin-top: 8px;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid var(--text-error);
+  border-radius: 8px;
+  background: var(--wf-panel-bg);
+  color: var(--text-error);
+  font-size: 0.85em;
+  line-height: 1.5;
+  white-space: pre-wrap; /* issues 清单是多行文本 */
+}
+
+/* ---- 底部按钮行 ---- */
+
+.wfjson-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+/* ---- 删除确认 ---- */
+
+.wfjson-modal-danger h3 {
+  color: var(--text-error);
+}
+
+.wfjson-modal-danger-list {
+  margin: 6px 0 4px;
+  padding-left: 22px;
+  color: var(--text-muted);
+  font-size: 0.86em;
+  line-height: 1.6;
+}
+
+.wfjson-modal-danger-list li::marker {
+  color: var(--text-error);
+}
+
+/* ---- 分析结果（formatAnalyzeResult 的纯文本，含行号与修复提示） ---- */
+
+.wfjson-analyze-result {
+  max-height: 55vh;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--wf-panel-border);
+  border-radius: 8px;
+  background: var(--wf-panel-bg);
+  white-space: pre-wrap;
+  font-size: 0.82em;
+  line-height: 1.5;
+}
+
+/* ==========================================================================
+   Phase 3（契约 doc/datacontact/data_ixd_phase3_contract.md §7；视图微调 v0.6 / v0.7 见
+   doc/datacontact/data_ixd_discuss_interact_v0.2.md《Phase 3 视图调整定稿》）
+   正计时器 + 近 21 天工作时长方块阵。对应 views/wfView.ts：
+     .wf-timer / .wf-timer-label / .wf-timer-clock       ① 正计时器（v0.7：独立成块、居中、黑底白字时钟）
+     .wf-timer-actions / .wf-timer-btn / --record|--discard  同上：快捷「结束并记录 / 结束并丢弃」按钮
+     .wf-heatmap / .wf-heatmap-title / .wf-heatmap-body 方块阵外壳（单行横条）
+     .wf-heat-week / .wf-heat / .wf-heat--l0 … -l4      每周 7 格（21 天 = 3 周），周间竖分割线
+     .wf-heat-tip / .wf-heat-tip-*                      悬浮详情（只有 left/top 走内联定位）
+   ========================================================================== */
+
+/* ---- 正计时器（Phase 3 v0.7：独立成块、整块居中；仅计时中才渲染） ---- */
+
+.wf-timer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.wf-timer-label {
+  font-size: 0.82em;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* HH:MM:SS：黑底白字胶囊（字号走设置面板写入的根元素变量 --wf-timer-font-size，默认 36px；
+   底色 / 字色 / 圆角 / 字体走 Phase 6 token，主题可换成霓虹 / 奶油 / 全圆角） */
+.wf-timer-clock {
+  display: inline-block;
+  font-size: var(--wf-timer-font-size, 36px);
+  font-weight: 600;
+  font-family: var(--wf-clock-font);
+  font-variant-numeric: tabular-nums; /* 每秒跳动时宽度不抖 */
+  letter-spacing: 0.02em;
+  color: var(--wf-timer-fg);
+  background: var(--wf-timer-bg);
+  border-radius: var(--wf-timer-radius);
+  padding: 2px 18px;
+  line-height: 1.3;
+  box-shadow: var(--wf-glow);
+}
+
+/* 开始时间失效（负值 / 无法解析）：那句长文案放不进 36px → 降字号（仍黑底白字） */
+.wf-timer-clock--invalid {
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+/* ---- 快捷结束按钮（与节点右键菜单同名项共用同一条写回链路） ---- */
+
+.wf-timer-actions {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  margin-top: 2px;
+  flex-wrap: wrap;             /* 配合 hint 的 100% 宽度换行 */
+}
+
+
+.wf-timer-actions .wf-app-title {
+  flex: 0 0 100%;              /* 独占一行，按钮换到下一行 */
+  margin: 0 0 4px;             /* 清掉 16px 上下 margin，只留底部 4px */
+  /* 以下不写 = 继承 .wf-app-title 的字体样式 */
+  /* font-family / font-size / font-weight / line-height / letter-spacing / color 全部保留 */
+}
+
+
+.wf-timer-btn {
+  cursor: pointer;
+  font-size: 0.85em;
+  line-height: 1.4;
+  height: auto; /* 覆盖 Obsidian 默认的 --input-height，按 padding 撑高 */
+  padding: 4px 14px;
+  border-radius: var(--wf-radius-btn);
+  border: 1px solid var(--background-modifier-border);
+  background: var(--interactive-normal);
+  color: var(--text-normal);
+  box-shadow: none;
+}
+
+.wf-timer-btn:hover {
+  background: var(--interactive-hover);
+}
+
+.wf-timer-btn--record {
+  border-color: transparent;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.wf-timer-btn--record:hover {
+  background: var(--interactive-accent-hover);
+}
+
+.wf-timer-btn--discard {
+  color: var(--text-error, #d64545);
+  border-color: var(--color-red, var(--background-modifier-border));
+}
+
+/* ---- Phase 17：「继续上次」一行（只在不计时的时候出现，与 .wf-timer 互斥） ----
+   Phase 18 ③：整行只剩**一个**按钮（`上一个任务：<title> · 继续这个任务`）——
+   原先的 `.wf-timer-resume-label` 已删除（文案并进按钮，按钮过长自己省略号）。 */
+
+.wf-timer-resume {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 4px 0 2px;
+  font-size: 0.82em;
+  color: var(--text-muted);
+}
+
+.wf-timer-resume-btn {
+  flex: 0 1 auto;
+  overflow: hidden;
+  max-width: 80%;
+  height: auto;
+  min-height: 28px;              /* 新增：给按钮一个下限 */
+  padding: 4px 12px;             /* 上下 2 → 4 */
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--wf-radius-btn);
+  background: var(--interactive-normal);
+  box-shadow: none;
+  color: var(--text-normal);
+  cursor: pointer;
+  font-size: 0.9em;              /* 可提到 0.95em */
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;        /* button 默认 inline-block，和相邻元素对齐 */
+}
+
+.wf-timer-resume-btn:hover {
+  background: var(--interactive-hover);   /* 补 hover 反馈 */
+}
+
+.wf-timer-resume-btn:focus-visible {
+  outline: 2px solid var(--text-accent);
+  outline-offset: 2px;           /* 因为 overflow:hidden，outline 用 offset 露出来 */
+}
+
+.wf-timer-resume-btn:hover {
+  background: var(--interactive-hover);
+}
+
+/* ---- 方块阵（Phase 16 起挂在 📊 小工具弹窗里） ---- */
+
+.wf-heatmap {
+  --wf-heat-size: 22px; /* v0.6：单行横条空间充足 → 相应放大 */
+  --wf-heat-gap: 4px;
+
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--wf-panel-border);
+}
+
+.wf-heatmap-title {
+  margin-bottom: 6px;
+  font-size: 0.78em;
+  color: var(--text-muted);
+}
+
+/* 单行横条：3 周并排（Phase 3 v0.6；不再有左侧星期标签列） */
+.wf-heatmap-body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 一周 = 7 格（21 天 → 3 个 .wf-heat-week，最新一周在最右） */
+.wf-heat-week {
+  display: flex;
+  gap: var(--wf-heat-gap);
+}
+
+/* 周与周之间的竖分割线（第一周左侧不加） */
+.wf-heat-week + .wf-heat-week {
+  padding-left: 8px;
+  border-left: 1px solid var(--background-modifier-border);
+}
+
+.wf-heat {
+  width: var(--wf-heat-size);
+  height: var(--wf-heat-size);
+  border-radius: 4px;
+  background: var(--wf-heat-l0);
+}
+
+.wf-heat--l1 { background: var(--wf-heat-l1); }
+.wf-heat--l2 { background: var(--wf-heat-l2); }
+.wf-heat--l3 { background: var(--wf-heat-l3); }
+.wf-heat--l4 { background: var(--wf-heat-l4); }
+
+/* ==========================================================================
+   Phase 5（契约 doc/datacontact/data_ixd_discuss_interact_v0.4.md《Phase 5 定稿契约》）
+   ① 甘特图（Phase 17 常开）：`.wf-gantt` / `.wf-gantt-title`（一行小字标题）/
+      `.wf-gantt-body` + `.wf-gantt-legend`（图例）/ `.wf-gantt-row` / `.wf-gantt-date` /
+      `.wf-gantt-track`（整块暗底 + 每 2 小时一条分割线）/ `.wf-gantt-tick` /
+      `.wf-gantt-span` + `.wf-gantt-span--w0 … --w5`（Phase 8：按工作流 6 色循环）
+      / `.wf-gantt-tip-note`（悬浮提示里那句跨零点说明，复用 `.wf-heat-tip` 外壳）
+   ② 编辑节点信息：Modal 表单复用 `.wfjson-*`，多行概要借 `.wfjson-textarea`
+   ③ 修改工作流：`.wfjson-workflow-*`（可折叠区 / 字段网格 / 删除确认条 / 底部新增按钮）
+      + 视图侧 `.wf-block-actions` / `.wf-block-btn`（「正在进行」块尾的按钮）
+   ========================================================================== */
+
+/* ---- ① 甘特图（📊 弹窗：方块阵之下；Phase 17 起**常开**，不再是 `<details>`） ----
+   `.wf-gantt-title` 只是一行小字标题，`.wf-gantt-body` 里放图例 + 刻度行 + 21 行时间线。 */
+
+.wf-gantt {
+  --wf-gantt-tick: 8.33333%; /* 100% / 12 段 = 2 小时 */
+
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--wf-panel-border);
+}
+
+/* Phase 17：标题不再承担折叠手柄（去掉了 pointer / 自绘 ▸▾ / `[open]` 规则） */
+.wf-gantt-title {
+  font-size: 0.78em;
+  color: var(--text-muted);
+}
+
+/* 标题与内容的间距（Phase 11 起收在这里，标题下面不会留空行） */
+.wf-gantt-body {
+  margin-top: 6px;
+}
+
+/* 首行的图例（Phase 8 的「按工作流着色 / 每 2 小时一条分割线」） */
+.wf-gantt-legend {
+  margin-bottom: 4px;
+  font-size: 0.72em;
+  color: var(--text-faint);
+}
+
+/* 一行 = 日期列（定宽）+ 时间线；刻度行与数据行用同一套网格 */
+.wf-gantt-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wf-gantt-date {
+  flex: 0 0 auto;
+  /* Phase 13：标签收短成「月-日」（10 字符 → 5 字符），省下的宽度还给时间线；定宽保证各行时间线左端对齐 */
+  width: 6.4em;
+  font-size: 0.7em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.wf-gantt-date-hours {
+  margin-left: 6px;
+  color: var(--text-faint);
+}
+
+.wf-gantt-track {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 12px;
+  border-radius: 0; /* 21 行首尾相接 → 圆角只加在整块的头尾（见下），行间不留缺口 */
+  /* Phase 8：一整块暗色底 + 每 2 小时一条分割线（10 分钟格线已去掉） */
+  background-color: var(--wf-gantt-track-bg, #1e1e24);
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--wf-gantt-track-line, rgb(255 255 255 / 0.16)) 0 1px,
+    transparent 1px var(--wf-gantt-tick)
+  );
+}
+
+/* 整块暗底的上下圆角：第一行数据行（紧接刻度行）左上/右上，最后一行左下/右下 */
+.wf-gantt-row--axis + .wf-gantt-row .wf-gantt-track {
+  border-top-left-radius: 3px;
+  border-top-right-radius: 3px;
+}
+
+.wf-gantt-row:last-child .wf-gantt-track {
+  border-bottom-left-radius: 3px;
+  border-bottom-right-radius: 3px;
+}
+
+.wf-gantt-track--axis {
+  height: 14px;
+  background-color: transparent;
+  background-image: none;
+}
+
+.wf-gantt-row--axis {
+  margin-bottom: 2px;
+}
+
+/* 刻度文字（00 / 02 / … / 22）：left 由视图按数据写入，这里只负责居中与字号 */
+.wf-gantt-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-size: 0.62em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+/* 高亮段：left / width 由视图按数据写入（百分比），外观全在这里 */
+.wf-gantt-span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 3px;
+  background: var(--wf-gantt-color);
+  opacity: 0.9;
+}
+
+/* Phase 8：每个工作流一种颜色（`workflowIndex % 6` → c0…c5），同一工作流跨天同色 */
+.wf-gantt-span--w0 { background: var(--wf-gantt-c0, var(--wf-gantt-color)); }
+.wf-gantt-span--w1 { background: var(--wf-gantt-c1, var(--wf-gantt-color)); }
+.wf-gantt-span--w2 { background: var(--wf-gantt-c2, var(--wf-gantt-color)); }
+.wf-gantt-span--w3 { background: var(--wf-gantt-c3, var(--wf-gantt-color)); }
+.wf-gantt-span--w4 { background: var(--wf-gantt-c4, var(--wf-gantt-color)); }
+.wf-gantt-span--w5 { background: var(--wf-gantt-c5, var(--wf-gantt-color)); }
+
+.wf-gantt-span:hover {
+  opacity: 1;
+}
+
+.wf-gantt-tip-note {
+  margin-top: 2px;
+  color: var(--text-faint);
+}
+
+/* ---- ② 编辑节点信息：多行概要输入（与归档表单同款，名字更中性） ---- */
+
+.wfjson-textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 54px;
+  padding: 6px 8px;
+  resize: vertical;
+  font-family: inherit;
+}
+
+/* ---- ③ 修改工作流 ---- */
+
+/* 「正在进行」块尾的入口按钮 */
+.wf-block-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+.wf-block-btn {
+  cursor: pointer;
+  font-size: 0.85em;
+  line-height: 1.4;
+  height: auto;
+  padding: 4px 14px;
+  border-radius: var(--wf-radius-btn);
+  border: 1px solid var(--background-modifier-border);
+  background: var(--interactive-normal);
+  color: var(--text-normal);
+  box-shadow: none;
+}
+
+.wf-block-btn:hover {
+  background: var(--interactive-hover);
+}
+
+/* 每个工作流一个可折叠区 */
+.wfjson-workflow-entry {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--wf-panel-border);
+  border-radius: 8px;
+  background: var(--wf-panel-bg);
+}
+
+.wfjson-workflow-entry > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.wfjson-workflow-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 10px;
+  margin-top: 8px;
+}
+
+.wfjson-workflow-grid .wfjson-field {
+  margin-bottom: 0;
+}
+
+/* 跨两列的行（概要 / 标签 / 删除确认条） */
+.wfjson-workflow-wide {
+  grid-column: 1 / -1;
+}
+
+/* 删除确认条（就地二次确认，不用 window.confirm） */
+.wfjson-workflow-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--text-error);
+  border-radius: 6px;
+  color: var(--text-error);
+  font-size: 0.85em;
+  box-sizing: border-box;
+}
+
+/* v0.7 §⑨-3：没点「删除」之前必须真的不占位（此前缺这条规则，确认条一直显示成空框） */
+.wfjson-workflow-confirm--hidden {
+  display: none;
+}
+
+/* v0.7 §⑨-3：删除按钮与就地确认条同一行，红框包住整个删除区 */
+.wfjson-workflow-remove {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px dashed var(--text-error);
+  border-radius: 6px;
+  box-sizing: border-box;
+}
+
+/* Phase 10：确认条强制独占一行，并顶满红虚线框的内部边缘
+   （浅色系统下原来 `flex: 1 1 auto` 只占内容宽，右侧留一截空白） */
+.wfjson-workflow-remove .wfjson-workflow-confirm {
+  flex: 1 0 100%;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+/* 已标记删除的条目：整块变淡 + 顶掉指针事件（防止再改） */
+.wfjson-workflow-entry--removed {
+  opacity: 0.55;
+}
+
+.wfjson-workflow-entry--removed .wfjson-workflow-grid,
+.wfjson-workflow-entry--removed .wfjson-workflow-confirm {
+  pointer-events: none;
+}
+
+.wfjson-workflow-add {
+  margin-top: 4px;
+}
+
+
+.wf-heat-tip {
+  position: fixed;
+  /* Phase 18 ⑤：抬到 10000 —— 高于弹窗（9998）与右键菜单（9999）。
+     它是只读浮层且 `pointer-events: none`，不会挡住菜单 / 拖拽。 */
+  z-index: 10000;
+  min-width: 140px;
+  max-width: 260px;
+  padding: 6px 8px;
+  border: 1px solid var(--wf-panel-border);
+  border-radius: 8px;
+  background: var(--wf-panel-bg);
+  box-shadow: var(--shadow-s);
+  font-size: 0.78em;
+  line-height: 1.5;
+  pointer-events: none; /* 别把 mouseleave 抢走 */
+}
+
+.wf-heat-tip-date {
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.wf-heat-tip-total {
+  color: var(--text-muted);
+}
+
+.wf-heat-tip-row {
+  color: var(--text-muted);
+}
+
+/* ==========================================================================
+   Phase 6 · 主题（契约 doc/datacontact/data_ixd_discuss_interact_v0.5.md
+   《Phase 6 定稿契约》）
+
+   约定：
+   - token 默认值在顶部 `body { … }`；这里只写「主题差值」——
+     浅色块挂 `.wf-theme[data-wf-theme="…"]`（视图容器 / 弹层），暗色块再加 `.theme-dark`
+     （Obsidian 通常挂在 `<body>`；选择器更长 → 暗色赢）；
+   - Phase 9：属性挂在**渲染容器**上（每文件独立），不再挂 `<html>`；
+   - 暗色块只列需要换的 token，不重复整套；
+   - 装饰只用伪元素 / 背景渐变，不加 DOM、不写内联样式。
+   ========================================================================== */
+
+/* ---- 切换入口（「状态总览」块末尾：主题按钮组） ---- */
+
+.wf-theme-switch {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--wf-panel-border);
+}
+
+.wf-theme-switch-label {
+  font-size: 0.72em;
+  color: var(--text-faint);
+}
+
+.wf-theme-switch-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.wf-theme-btn {
+  cursor: pointer;
+  height: auto;
+  padding: 2px 10px;
+  border: 1px solid var(--wf-panel-border);
+  border-radius: var(--wf-radius-btn);
+  background: var(--interactive-normal);
+  color: var(--text-faint);
+  box-shadow: none;
+  font-size: 0.72em;
+  line-height: 1.5;
+}
+
+.wf-theme-btn:hover {
+  background: var(--interactive-hover);
+  color: var(--text-normal);
+}
+
+.wf-theme-btn--active,
+.wf-theme-btn--active:hover {
+  border-color: transparent;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+/* ---- Phase 10：方块阵颜色由「该主题 c0」派生 ----
+   为什么要挂 `.wf-theme` 而不是只挂 body：`var()` 的替换发生在**声明所在元素**上，
+   所以 `body { --wf-heat-l1: color-mix(… var(--wf-heat-color) …) }` 在 body 上就把紫色算死了，
+   主题块里再改 `--wf-heat-color` 也影响不到 l1–l4。把这组派生放到 `.wf-theme` 上，
+   才会用该主题自己的 `--wf-gantt-c0` / `--wf-heat-muted` 现算。
+   主题块里因此不再各写 `--wf-heat-color` / `--wf-gantt-color`（写了会因同优先级靠后而盖掉派生）。 */
+.wf-theme[data-wf-theme] {
+  --wf-heat-color: var(--wf-gantt-c0);
+  --wf-gantt-color: var(--wf-gantt-c0);
+  --wf-heat-l0: var(--wf-heat-muted);
+  --wf-heat-l1: color-mix(in srgb, var(--wf-heat-color) 25%, var(--background-primary));
+  --wf-heat-l2: color-mix(in srgb, var(--wf-heat-color) 45%, var(--background-primary));
+  --wf-heat-l3: color-mix(in srgb, var(--wf-heat-color) 70%, var(--background-primary));
+  --wf-heat-l4: var(--wf-heat-color);
+}
+
+/* ---- ① 科技风：冷灰 / OLED 黑 + 霓虹青 + 直角 + 扫描线 ---- */
+
+.wf-theme[data-wf-theme="tech"] {
+  --wf-panel-bg: #f2f5f8;
+  --wf-panel-border: #c2d0dc;
+  --wf-panel-radius: 2px;
+  --wf-lane-bg: #fbfdff;
+  --wf-radius-lane: 4px;
+  --wf-radius-card: 3px;
+  --wf-radius-btn: 2px;
+  --wf-card-border: #a9bccb;
+  --wf-card-open-bg: #e2edf5;
+  --wf-card-done-bg: #f5f9fc;
+  --wf-line-color: #9fb3c4;
+  --wf-status-todo: #55677a;
+  --wf-status-doing: #007a8a;
+  --wf-status-done: #0a7d4f;
+  --wf-status-blocked: #c2185b;
+  --wf-status-cancelled: #8a96a3;
+  --wf-heat-muted: #d7e2ec;
+  /* Phase 10：浅色系统给「浅底可读」的深饱和 6 色（方块阵横条颜色随之派生自 c0） */
+  --wf-gantt-track-bg: #eef4f8;
+  --wf-gantt-track-line: rgb(0 122 138 / 0.2);
+  --wf-gantt-c0: #007a8a;
+  --wf-gantt-c1: #0a7d4f;
+  --wf-gantt-c2: #3a4fd0;
+  --wf-gantt-c3: #c2185b;
+  --wf-gantt-c4: #a86a00;
+  --wf-gantt-c5: #6a2fb0;
+  --wf-timer-bg: #0b1620;
+  --wf-timer-fg: #00e5ff;
+  --wf-timer-radius: 2px;
+  --wf-clock-font: --wf-title-font-tech;
+  --wf-title-font: --wf-title-font-tech;
+}
+
+/* 装饰：卡片顶部一道扫描高光线（伪元素，不加 DOM） */
+.wf-theme[data-wf-theme="tech"] .wf-card::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  border-radius: inherit;
+  background: linear-gradient(to right, transparent, var(--wf-status-doing), transparent);
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+/* Phase 17 签名元素：栏头右侧拖一条虚线「信号」（纯伪元素，不新增 DOM） */
+.wf-theme[data-wf-theme="tech"] .wf-lane-head::after {
+  content: "";
+  flex: 1 1 auto;
+  align-self: center;
+  height: 1px;
+  background: repeating-linear-gradient(
+    to right,
+    var(--wf-status-doing) 0 6px,
+    transparent 6px 11px
+  );
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+body.theme-dark .wf-theme[data-wf-theme="tech"],
+:root.theme-dark .wf-theme[data-wf-theme="tech"] {
+  --wf-panel-bg: #000000;
+  --wf-panel-border: #16323d;
+  --wf-lane-bg: #05080c;
+  --wf-card-border: #1d4a55;
+  --wf-card-open-bg: #0a1418;
+  --wf-card-done-bg: #05080c;
+  --wf-line-color: #1f5560;
+  --wf-status-todo: #8aa0ad;
+  --wf-status-doing: #00f0ff;
+  --wf-status-done: #29ff9a;
+  --wf-status-blocked: #ff2d78;
+  --wf-status-cancelled: #5d6b75;
+  --wf-heat-muted: #12232b;
+  /* Phase 10：暗色系统 = 常暗底 + 深底可读的霓虹 6 色；2 小时分割线提亮（荧光感更强） */
+  --wf-gantt-track-bg: #0b1620;
+  --wf-gantt-track-line: rgb(0 240 255 / 0.5);
+  --wf-gantt-c0: #00e5ff;
+  --wf-gantt-c1: #39ff9e;
+  --wf-gantt-c2: #6c7cff;
+  --wf-gantt-c3: #ff2d78;
+  --wf-gantt-c4: #ffd23f;
+  --wf-gantt-c5: #b06bff;
+  --wf-timer-bg: #000000;
+  --wf-timer-fg: #00f0ff;
+  --wf-card-shadow: 0 0 18px rgb(0 240 255 / 0.24);
+  --wf-glow: 0 0 14px rgb(0 240 255 / 0.6);
+}
+
+/* Phase 10：科技风加强外发光（卡片 / 标题 / 计时器 / 方块阵 / 甘特轨道）
+   浅色下只给一层很淡的光晕，暗色（OLED）才是霓虹主场。
+   注意：`box-shadow: none, inset …` 是非法值（`none` 不能出现在多阴影列表里），
+   所以浅色这一层不能复用 `var(--wf-card-shadow)`，直接写字面色。 */
+/*.wf-theme[data-wf-theme="tech"] .wf-card,
+.wf-theme[data-wf-theme="tech"] .wf-overview,
+.wf-theme[data-wf-theme="tech"] .wf-lane,
+.wf-theme[data-wf-theme="tech"] .wf-timer {
+  box-shadow:
+    0 0 10px rgb(0 122 138 / 0.18),
+    0 0 0 1px rgb(0 122 138 / 0.16),
+    inset 0 0 18px rgb(0 120 140 / 0.07);
+}*/
+.wf-theme[data-wf-theme="tech"] .wf-card,
+.wf-theme[data-wf-theme="tech"] .wf-overview {
+  box-shadow:
+    0 0 10px rgb(0 122 138 / 0.18),
+    0 0 0 1px rgb(0 122 138 / 0.16),
+    inset 0 0 18px rgb(0 120 140 / 0.07);
+}
+
+.wf-theme[data-wf-theme="tech"] .wf-card-title,
+.wf-theme[data-wf-theme="tech"] .wf-lane-title,
+.wf-theme[data-wf-theme="tech"] .wf-block-title {
+  text-shadow: 0 0 6px rgb(0 150 170 / 0.28);
+}
+
+.theme-dark .wf-theme[data-wf-theme="tech"] .wf-card,
+:root.theme-dark .wf-theme[data-wf-theme="tech"] .wf-card {
+  box-shadow:
+    0 0 26px rgb(0 240 255 / 0.34),
+    0 0 0 1px rgb(0 240 255 / 0.55),
+    0 0 0 3px rgb(0 240 255 / 0.12),
+    inset 0 0 22px rgb(0 240 255 / 0.14);
+}
+/*
+.theme-dark .wf-theme[data-wf-theme="tech"] .wf-lane,
+.theme-dark .wf-theme[data-wf-theme="tech"] .wf-overview,
+:root.theme-dark .wf-theme[data-wf-theme="tech"] .wf-lane,
+:root.theme-dark .wf-theme[data-wf-theme="tech"] .wf-overview {
+  box-shadow:
+    0 0 20px rgb(0 240 255 / 0.18),
+    0 0 0 1px rgb(0 240 255 / 0.38),
+    inset 0 0 18px rgb(0 240 255 / 0.08);
+}*/
+
+.theme-dark .wf-theme[data-wf-theme="tech"] .wf-overview,
+:root.theme-dark .wf-theme[data-wf-theme="tech"] .wf-overview {
+  box-shadow:
+    0 0 20px rgb(0 240 255 / 0.18),
+    0 0 0 1px rgb(0 240 255 / 0.38),
+    inset 0 0 18px rgb(0 240 255 / 0.08);
+}
+/*
+.theme-dark .wf-theme[data-wf-theme="tech"] .wf-timer,
+:root.theme-dark .wf-theme[data-wf-theme="tech"] .wf-timer {
+  box-shadow:
+    0 0 26px rgb(0 240 255 / 0.45),
+    0 0 0 1px rgb(0 240 255 / 0.5),
+    inset 0 0 16px rgb(0 240 255 / 0.2);
+}
+*/
+.theme-dark .wf-theme[data-wf-theme="tech"] .wf-card-title,
+.theme-dark .wf-theme[data-wf-theme="tech"] .wf-lane-title,
+.theme-dark .wf-theme[data-wf-theme="tech"] .wf-block-title,
+:root.theme-dark .wf-theme[data-wf-theme="tech"] .wf-card-title,
+:root.theme-dark .wf-theme[data-wf-theme="tech"] .wf-lane-title,
+:root.theme-dark .wf-theme[data-wf-theme="tech"] .wf-block-title {
+  text-shadow: 0 0 6px rgb(0 240 255 / 0.75), 0 0 16px rgb(0 240 255 / 0.5);
+}
+
+.theme-dark .wf-theme[data-wf-theme="tech"] .wf-timer-clock,
+:root.theme-dark .wf-theme[data-wf-theme="tech"] .wf-timer-clock {
+  text-shadow: 0 0 8px rgb(0 240 255 / 0.75), 0 0 22px rgb(0 240 255 / 0.4);
+}
+
+.theme-dark .wf-theme[data-wf-theme="tech"] .wf-heat--l3,
+.theme-dark .wf-theme[data-wf-theme="tech"] .wf-heat--l4,
+:root.theme-dark .wf-theme[data-wf-theme="tech"] .wf-heat--l3,
+:root.theme-dark .wf-theme[data-wf-theme="tech"] .wf-heat--l4 {
+  box-shadow: 0 0 8px rgb(0 240 255 / 0.65);
+}
+
+.theme-dark .wf-theme[data-wf-theme="tech"] .wf-gantt-track,
+:root.theme-dark .wf-theme[data-wf-theme="tech"] .wf-gantt-track {
+  box-shadow: inset 0 0 14px rgb(0 240 255 / 0.14);
+}
+
+/* 暗色：总览面板叠一层极淡扫描线 */
+.theme-dark .wf-theme[data-wf-theme="tech"] .wf-overview,
+:root.theme-dark .wf-theme[data-wf-theme="tech"] .wf-overview {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    rgb(0 240 255 / 0.05) 0 1px,
+    transparent 1px 3px
+  );
+}
+
+/* ---- ② 自然风：米纸 + 苔绿 + 陶土棕 + 大圆角 + 纸纹点阵 ---- */
+
+.wf-theme[data-wf-theme="nature"] {
+  --wf-panel-bg: #f3eddf;
+  --wf-panel-border: #d8cdb8;
+  --wf-panel-radius: 14px;
+  --wf-lane-bg: #faf6ec;
+  --wf-radius-lane: 16px;
+  --wf-radius-card: 14px;
+  --wf-radius-btn: 999px;
+  --wf-card-border: #cdbfa4;
+  --wf-card-open-bg: #f2e7c9;
+  --wf-card-done-bg: #fbf8ef;
+  --wf-line-color: #c3b396;
+  --wf-status-todo: #7d7460;
+  --wf-status-doing: #4f7a4a;
+  --wf-status-done: #3f7d52;
+  --wf-status-blocked: #b0603f;
+  --wf-status-cancelled: #9c9382;
+  --wf-heat-muted: #e2d8c3;
+  /* Phase 10：浅色系统（浅牛皮纸底 + 深饱和的苔绿 / 陶土 / 灰蓝 6 色） */
+  --wf-gantt-track-bg: #ece3d1;
+  --wf-gantt-track-line: rgb(107 143 90 / 0.22);
+  --wf-gantt-c0: #4f7a4a;
+  --wf-gantt-c1: #2f6b4f;
+  --wf-gantt-c2: #a05a1f;
+  --wf-gantt-c3: #8c3a24;
+  --wf-gantt-c4: #2f6b64;
+  --wf-gantt-c5: #7a3f5c;
+  /* Phase 10：更宽松的空间 —— 更少的压迫感、更多呼吸感 */
+  --wf-lane-pad: 16px 3px 12px;
+  --wf-lane-gap: 20px;
+  --wf-card-pad: 12px 14px 10px 17px;
+  --wf-block-margin: 14px 0 9px;
+  --wf-timer-bg: #3f5a3c;
+  --wf-timer-fg: #f7f2e4;
+  --wf-timer-radius: 14px;
+  --wf-title-font: Georgia, "Songti SC", "Noto Serif SC", serif;
+  --wf-card-shadow: 0 2px 6px rgb(90 74 44 / 0.08);
+}
+/* 比如在黏土主题下，线只有一半高，圆润一点 */
+.wf-theme[data-wf-theme="nature"] {
+  --wf-status-bar-height: 90%; 
+}
+
+/* 装饰：手工纸纹（4px 点阵） */
+.wf-theme[data-wf-theme="nature"] .wf-overview,
+.wf-theme[data-wf-theme="nature"] .wf-lane {
+  background-image: radial-gradient(rgb(122 106 74 / 0.1) 0.5px, transparent 0.5px);
+  background-size: 4px 4px;
+}
+
+/* Phase 17 签名元素：卡片右下角折个「纸角」（dog-ear，纯伪元素） */
+.wf-theme[data-wf-theme="nature"] .wf-card::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 0 0 14px 14px;
+  border-color: transparent transparent rgb(122 106 74 / 0.16) transparent;
+  pointer-events: none;
+}
+
+/* Phase 10：非状态文字改绿 / 褐系（减少纯黑 / 纯白），更贴合大地色 */
+.wf-theme[data-wf-theme="nature"] .wf-card-title,
+.wf-theme[data-wf-theme="nature"] .wf-lane-title,
+.wf-theme[data-wf-theme="nature"] .wf-block-title {
+  color: #465c36;
+}
+
+.wf-theme[data-wf-theme="nature"] .wf-card {
+  color: #5a462f;
+}
+
+.wf-theme[data-wf-theme="nature"] .wf-card-summary {
+  color: #6b5236;
+  opacity: 1;
+}
+
+.wf-theme[data-wf-theme="nature"] .wf-card-meta,
+.wf-theme[data-wf-theme="nature"] .wf-lane-meta {
+  color: #7a6a4f;
+}
+
+body.theme-dark .wf-theme[data-wf-theme="nature"],
+:root.theme-dark .wf-theme[data-wf-theme="nature"] {
+  --wf-panel-bg: #262019;
+  --wf-panel-border: #473d30;
+  --wf-lane-bg: #2e271f;
+  --wf-card-border: #4f4436;
+  --wf-card-open-bg: #3b3226;
+  --wf-card-done-bg: #2b241c;
+  --wf-line-color: #5a4d3c;
+  --wf-status-todo: #a89c86;
+  --wf-status-doing: #8fbf72;
+  --wf-status-done: #7fc98f;
+  --wf-status-blocked: #e08b62;
+  --wf-status-cancelled: #7d7364;
+  --wf-heat-muted: #3a3228;
+  /* Phase 10：暗色系统 = 常暗底 + 深底可读的苔绿 / 陶土 6 色 */
+  --wf-gantt-track-bg: #2e271f;
+  --wf-gantt-track-line: rgb(247 235 214 / 0.18);
+  --wf-gantt-c0: #7fb069;
+  --wf-gantt-c1: #4f8f6a;
+  --wf-gantt-c2: #c98a4b;
+  --wf-gantt-c3: #b0603f;
+  --wf-gantt-c4: #7fa8a0;
+  --wf-gantt-c5: #a86f8f;
+  --wf-timer-bg: #3b3226;
+  --wf-timer-fg: #d9f0b8;
+  --wf-timer-radius: 14px;
+  --wf-card-shadow: 0 2px 8px rgb(0 0 0 / 0.35);
+}
+
+.theme-dark .wf-theme[data-wf-theme="nature"] .wf-overview,
+.theme-dark .wf-theme[data-wf-theme="nature"] .wf-lane,
+:root.theme-dark .wf-theme[data-wf-theme="nature"] .wf-overview,
+:root.theme-dark .wf-theme[data-wf-theme="nature"] .wf-lane {
+  background-image: radial-gradient(rgb(255 240 210 / 0.05) 0.5px, transparent 0.5px);
+  background-size: 4px 4px;
+}
+
+/* Phase 10（暗色）：同样是绿 / 褐系，只是抬亮，避免纯白刺眼 */
+.theme-dark .wf-theme[data-wf-theme="nature"] .wf-card-title,
+.theme-dark .wf-theme[data-wf-theme="nature"] .wf-lane-title,
+.theme-dark .wf-theme[data-wf-theme="nature"] .wf-block-title,
+:root.theme-dark .wf-theme[data-wf-theme="nature"] .wf-card-title,
+:root.theme-dark .wf-theme[data-wf-theme="nature"] .wf-lane-title,
+:root.theme-dark .wf-theme[data-wf-theme="nature"] .wf-block-title {
+  color: #bcd79b;
+}
+
+.theme-dark .wf-theme[data-wf-theme="nature"] .wf-card,
+:root.theme-dark .wf-theme[data-wf-theme="nature"] .wf-card {
+  color: #e4d8c3;
+}
+
+.theme-dark .wf-theme[data-wf-theme="nature"] .wf-card-summary,
+:root.theme-dark .wf-theme[data-wf-theme="nature"] .wf-card-summary {
+  color: #dcc6a4;
+}
+
+.theme-dark .wf-theme[data-wf-theme="nature"] .wf-card-meta,
+.theme-dark .wf-theme[data-wf-theme="nature"] .wf-lane-meta,
+:root.theme-dark .wf-theme[data-wf-theme="nature"] .wf-card-meta,
+:root.theme-dark .wf-theme[data-wf-theme="nature"] .wf-lane-meta {
+  color: #b3a486;
+}
+
+/* ---- ③ 杂志风：白 + 黑 + 深红 + 全衬线（标题 / 正文同一套） + 大留白 ---- */
+
+.wf-theme[data-wf-theme="magazine"] {
+  --wf-panel-bg: #ffffff;
+  --wf-panel-border: #d9d9d9;
+  --wf-panel-radius: 0px;
+  --wf-lane-bg: #ffffff;
+  --wf-radius-lane: 0px;
+  --wf-radius-card: 2px;
+  --wf-radius-btn: 0px;
+  /* Phase 18 ⑦：卡片宽度不再由主题覆写（设置项优先于所有主题；想要 240 的用户自己填 240） */
+  --wf-card-font-size: 0.88em;
+  --wf-card-border: #1a1a1a;
+  --wf-card-open-bg: #ffffff;
+  --wf-card-done-bg: #fafafa;
+  --wf-line-color: #bdbdbd;
+  --wf-status-todo: #8c8c8c;
+  --wf-status-doing: #1a1a1a;
+  --wf-status-done: #8c1d1d;
+  --wf-status-blocked: #b3261e;
+  --wf-status-cancelled: #a6a6a6;
+  --wf-heat-muted: #ececec;
+  /* Phase 10：浅色系统（纸白底 + 黑白 / 深红 / 暖沙 / 钢灰 6 色） */
+  --wf-gantt-track-bg: #f2f2f2;
+  --wf-gantt-track-line: rgb(26 26 26 / 0.14);
+  --wf-gantt-c0: #b3261e;
+  --wf-gantt-c1: #1a1a1a;
+  --wf-gantt-c2: #6e6e6e;
+  --wf-gantt-c3: #a6702a;
+  --wf-gantt-c4: #4a5a66;
+  --wf-gantt-c5: #8c1d1d;
+  /* Phase 10：精致留白 —— 标题与正文、卡片与卡片、区块之间都拉开 */
+  --wf-lane-pad: 10px 3px 7px;
+  --wf-lane-gap: 26px;
+  --wf-card-pad: 12px 14px 10px 17px;
+  --wf-block-margin: 18px 0 10px;
+  --wf-timer-bg: #111111;
+  --wf-timer-fg: #ffffff;
+  --wf-timer-radius: 0px;
+  --wf-title-font: Georgia, "Times New Roman", "Songti SC", "Noto Serif SC", serif;
+  /* Phase 10：正文也用标题那套衬线 —— 「In progress / 正在进行」与正文同一字体 */
+  --wf-body-font: var(--wf-title-font);
+  /* 时钟仍是同一套衬线，只是把 Times 放最前（等高数字，秒跳时胶囊不会忽宽忽窄） */
+  --wf-clock-font: "Times New Roman", Georgia, "Songti SC", "Noto Serif SC", serif;
+}
+
+/* 装饰：标题字距 + 泳道头一根发丝线（不加 DOM） */
+.wf-theme[data-wf-theme="magazine"] .wf-lane-title,
+.wf-theme[data-wf-theme="magazine"] .wf-block-title {
+  letter-spacing: 0.08em;
+}
+
+.wf-theme[data-wf-theme="magazine"] .wf-lane-head {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--wf-panel-border);
+}
+
+/* Phase 17 签名元素：块标题下面压一条「社论粗线」（纯伪元素，不加 DOM） */
+.wf-theme[data-wf-theme="magazine"] .wf-block-title::after {
+  content: "";
+  display: block;
+  height: 3px;
+  margin-top: 4px;
+  background: var(--wf-card-border);
+}
+
+/* Phase 10：精致留白 —— 标题与正文之间多留一口气，正文行距放松 */
+.wf-theme[data-wf-theme="magazine"] .wf-card-meta {
+  margin-top: 7px;
+}
+
+.wf-theme[data-wf-theme="magazine"] .wf-card-summary {
+  margin-top: 7px;
+  line-height: 1.5;
+}
+
+.wf-theme[data-wf-theme="magazine"] .wf-card-time,
+.wf-theme[data-wf-theme="magazine"] .wf-card-progress {
+  margin-top: 7px;
+}
+
+/* Phase 10：杂志风**全站**统一到标题那套衬线（Georgia / Times / 宋体）
+   —— 状态总览、泳道、卡片正文、折叠区、归档块、方块阵、甘特、主题切换按钮都跟着走。
+   走 `*` 是因为甘特 / 方块阵 / 按钮这些原本直接继承容器字体，没有自己的 font-family。 */
+.wf-theme[data-wf-theme="magazine"],
+.wf-theme[data-wf-theme="magazine"] * {
+  font-family: var(--wf-title-font);
+}
+
+/* 例外：计时器用同一套衬线里的 Times New Roman（等高数字，秒跳不抖） */
+.wf-theme[data-wf-theme="magazine"] .wf-timer-clock {
+  font-family: var(--wf-clock-font);
+}
+
+body.theme-dark .wf-theme[data-wf-theme="magazine"],
+:root.theme-dark .wf-theme[data-wf-theme="magazine"] {
+  --wf-panel-bg: #121212;
+  --wf-panel-border: #2e2e2e;
+  --wf-lane-bg: #0e0e0e;
+  --wf-card-border: #8a8a8a;
+  --wf-card-open-bg: #171717;
+  --wf-card-done-bg: #111111;
+  --wf-line-color: #4a4a4a;
+  --wf-status-todo: #9a9a9a;
+  --wf-status-doing: #f0f0f0;
+  --wf-status-done: #e0655f;
+  --wf-status-blocked: #ff6b61;
+  --wf-status-cancelled: #6e6e6e;
+  --wf-heat-muted: #262626;
+  /* Phase 10：暗色系统 = 常暗底 + 深底可读的 6 色（暖白 / 深红 / 暖沙 / 钢灰） */
+  --wf-gantt-track-bg: #111111;
+  --wf-gantt-track-line: rgb(255 255 255 / 0.2);
+  --wf-gantt-c0: #e0655f;
+  --wf-gantt-c1: #f2f2f2;
+  --wf-gantt-c2: #a6a6a6;
+  --wf-gantt-c3: #d9a066;
+  --wf-gantt-c4: #7a8c99;
+  --wf-gantt-c5: #b3261e;
+  --wf-timer-bg: #f0f0f0;
+  --wf-timer-fg: #111111;
+}
+
+/* ---- ④ 复古风：奶油 + 咖啡棕 + 铁锈红 + 粗衬线 + 唱片纹 ---- */
+
+.wf-theme[data-wf-theme="retro"] {
+  --wf-panel-bg: #f2e2c9;
+  --wf-panel-border: #c8ac85;
+  --wf-panel-radius: 6px;
+  --wf-lane-bg: #f7ebd6;
+  --wf-radius-lane: 8px;
+  --wf-radius-card: 6px;
+  --wf-radius-btn: 4px;
+  --wf-card-border: #a98a62;
+  --wf-card-open-bg: #f0dcb4;
+  --wf-card-done-bg: #f8eeda;
+  --wf-line-color: #b79a72;
+  --wf-status-todo: #7a6a52;
+  --wf-status-doing: #4f6b7a;
+  --wf-status-done: #5d6b3a;
+  --wf-status-blocked: #9c3f2e;
+  --wf-status-cancelled: #9a8b74;
+  --wf-heat-muted: #e3d2b6;
+  /* Phase 10：浅色系统（奶油底 + 深饱和的咖啡 / 铁锈 / 橄榄 6 色） */
+  --wf-gantt-track-bg: #efe0c4;
+  --wf-gantt-track-line: rgb(122 82 48 / 0.22);
+  --wf-gantt-c0: #8c4a1e;
+  --wf-gantt-c1: #b5651d;
+  --wf-gantt-c2: #9c3f2e;
+  --wf-gantt-c3: #7a6630;
+  --wf-gantt-c4: #5d6b3a;
+  --wf-gantt-c5: #46606e;
+  --wf-timer-bg: #3e2a1c;
+  --wf-timer-fg: #f2e2c9;
+  --wf-timer-radius: 6px;
+  --wf-clock-font: Georgia, "Courier New", var(--font-monospace);
+  /* Phase 10：英文花体（script）+ 中文回落宋体；其余文字仍是原来的衬线 */
+  --wf-title-font:
+    "Snell Roundhand", "Brush Script MT", "Segoe Script", "Apple Chancery", "Songti SC",
+    "Noto Serif SC", Georgia, serif;
+  --wf-body-font: Georgia, "Songti SC", "Noto Serif SC", serif;
+  --wf-card-shadow: 1px 2px 0 rgb(93 66 40 / 0.25);
+  --wf-card-pad: 18px 14px 10px 17px;
+}
+
+/* 装饰：格纹背景（Phase 10 把唱片纹同心圆换成横竖交叉的格纹） */
+.wf-theme[data-wf-theme="retro"] .wf-overview,
+.wf-theme[data-wf-theme="retro"] .wf-lane {
+  background-image:
+    repeating-linear-gradient(
+      to right,
+      rgb(93 66 40 / 0.08) 0 1px,
+      transparent 1px 12px
+    ),
+    repeating-linear-gradient(
+      to bottom,
+      rgb(93 66 40 / 0.08) 0 1px,
+      transparent 1px 12px
+    );
+}
+
+/* Phase 17 签名元素：卡片顶上贴一段「胶带」（半透明纸 + 轻微旋转，纯伪元素） */
+.wf-theme[data-wf-theme="retro"] .wf-card::after {
+  content: "";
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  width: 46px;
+  height: 12px;
+  transform: translateX(-50%) rotate(-2deg);
+  border: 1px solid rgb(122 82 48 / 0.25);
+  background: rgb(242 226 201 / 0.75);
+  box-shadow: 0 1px 2px rgb(93 66 40 / 0.22);
+  pointer-events: none;
+}
+
+/* Phase 10：复古风「① 状态总览」块内**每一处**文字都换成花体（中文宋体）
+   —— 统计行 `wf-overview-stat`、计时器、主题切换按钮都在 `.wf-overview` 里，
+   用 `*` 一次兜住（直接继承容器字体的子元素也覆盖到）。Phase 16 起方块阵 / 甘特图在 📊 弹窗里，
+   它们靠 `.wf-theme` 上继承的 `--wf-body-font` 取字体，不再经过这里。 */
+.wf-theme[data-wf-theme="retro"] .wf-overview,
+.wf-theme[data-wf-theme="retro"] .wf-overview * {
+  font-family: var(--wf-title-font);
+}
+
+body.theme-dark .wf-theme[data-wf-theme="retro"],
+:root.theme-dark .wf-theme[data-wf-theme="retro"] {
+  --wf-panel-bg: #2a1e15;
+  --wf-panel-border: #5a422c;
+  --wf-lane-bg: #33251a;
+  --wf-card-border: #6b5136;
+  --wf-card-open-bg: #43301f;
+  --wf-card-done-bg: #2e2116;
+  --wf-line-color: #6d5336;
+  --wf-status-todo: #b3a084;
+  --wf-status-doing: #8fb0c4;
+  --wf-status-done: #a8bf7c;
+  --wf-status-blocked: #e08a6f;
+  --wf-status-cancelled: #8a7a62;
+  --wf-heat-muted: #3d2d1e;
+  /* Phase 10：暗色系统 = 常暗底 + 深底可读的 6 色 */
+  --wf-gantt-track-bg: #2a1e15;
+  --wf-gantt-track-line: rgb(242 226 201 / 0.18);
+  --wf-gantt-c0: #d9a066;
+  --wf-gantt-c1: #b5651d;
+  --wf-gantt-c2: #9c3f2e;
+  --wf-gantt-c3: #c9b07a;
+  --wf-gantt-c4: #7f8f5a;
+  --wf-gantt-c5: #6f8f9e;
+  --wf-timer-bg: #1d130c;
+  --wf-timer-fg: #f2e2c9;
+  --wf-card-shadow: 1px 2px 0 rgb(0 0 0 / 0.45);
+}
+
+.theme-dark .wf-theme[data-wf-theme="retro"] .wf-overview,
+.theme-dark .wf-theme[data-wf-theme="retro"] .wf-lane,
+:root.theme-dark .wf-theme[data-wf-theme="retro"] .wf-overview,
+:root.theme-dark .wf-theme[data-wf-theme="retro"] .wf-lane {
+  background-image:
+    repeating-linear-gradient(
+      to right,
+      rgb(255 235 200 / 0.06) 0 1px,
+      transparent 1px 12px
+    ),
+    repeating-linear-gradient(
+      to bottom,
+      rgb(255 235 200 / 0.06) 0 1px,
+      transparent 1px 12px
+    );
+}
+
+/* ---- ⑤ 黏土风：马卡龙 + 糖果紫 + 大圆角 + 双向柔和阴影（claymorphism） ---- */
+
+.wf-theme[data-wf-theme="clay"] {
+  --wf-panel-bg: #f3eefb;
+  --wf-panel-border: #e3d9f3;
+  --wf-panel-radius: 20px;
+  --wf-lane-bg: #fdfbff;
+  --wf-radius-lane: 24px;
+  --wf-radius-card: 18px;
+  --wf-radius-btn: 4px;
+  --wf-card-border: #e6def5;
+  --wf-card-open-bg: #ffd9e6;
+  --wf-card-done-bg: #e8f7f1;
+  --wf-line-color: #d3c7ea;
+  --wf-status-todo: #8f86a6;
+  --wf-status-doing: #5b6be0;
+  --wf-status-done: #2f8f74;
+  --wf-status-blocked: #c94b80;
+  --wf-status-cancelled: #a79fbb;
+  --wf-heat-muted: #eee8f8;
+  /* Phase 10：浅色系统（浅紫底 + 深饱和的马卡龙糖果 6 色） */
+  --wf-gantt-track-bg: #f0eafb;
+  --wf-gantt-track-line: rgb(138 124 240 / 0.2);
+  --wf-gantt-c0: #d4498c;
+  --wf-gantt-c1: #5b4fd0;
+  --wf-gantt-c2: #1f8f74;
+  --wf-gantt-c3: #c87a1a;
+  --wf-gantt-c4: #2f7fc4;
+  --wf-gantt-c5: #8a4fbf;
+  --wf-timer-bg: #6c5ce7;
+  --wf-timer-fg: #ffffff;
+  --wf-timer-radius: 999px;
+  --wf-card-pad: 13px 14px 13px 17px;
+  /* Phase 10：更稚嫩的圆润字体（英文 Comic Sans / 中文幼圆），更像捏出来的黏土 */
+    /* 标题字体栈（英文童趣 + 中文超粗黑体） */
+  --wf-title-font: "Arial Rounded MT Bold", "Comic Sans MS", "Trebuchet MS", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --wf-body-font: "Comic Sans MS", "Chalkboard SE", "YouYuan", "幼圆", "PingFang SC", sans-serif;
+  --wf-card-shadow:
+    7px 7px 16px rgb(174 160 205 / 0.45),
+    -5px -5px 14px rgb(255 255 255 / 0.95),
+    inset -2px -2px 6px rgb(174 160 205 / 0.16),
+    inset 2px 2px 6px rgb(255 255 255 / 0.85);
+}
+/* 比如在黏土主题下，线只有一半高，圆润一点 */
+.wf-theme[data-wf-theme="clay"] {
+  --wf-status-bar-height: 80%; 
+  --wf-status-bar-width: 6px;
+}
+
+/* 注意：你的选择器少了一个空格，改成后代选择器才能精准命中 */
+.wf-theme[data-wf-theme="clay"] .wf-overview {
+  position: relative; /* 必须：作为底部背景的定位参照物 */
+  padding: 20px 24px 35px;
+  margin: 4px 3px 24px;
+  border: none; 
+  background: transparent; /* 去除原本的全屏背景 */
+  box-shadow: none; /* 去除原本的全局阴影 */
+  font-family: var(--wf-body-font);
+  z-index: 1; /* 创建层叠上下文 */
+}
+
+/* 用伪元素画底部 1/8 的黏土底座 */
+.wf-theme[data-wf-theme="clay"] .wf-overview::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0; /* 贴在底部 */
+  height: 12.5%; /* 占下方 1/8 */
+  z-index: -1; /* 放到文字内容的下面 */
+  pointer-events: none; /* 防止遮挡内容区的鼠标点击 */
+  
+  /* 以下全是你原本的黏土背景代码 */
+  border-radius: 28px; 
+  background: linear-gradient(135deg, #fdf4ff 0%, #f0e6ff 100%);
+  box-shadow: 
+    0 10px 25px rgba(190, 150, 255, 0.15),
+    inset 4px 4px 12px rgba(255, 255, 255, 1),
+    inset -4px -4px 12px rgba(210, 190, 240, 0.4);
+    
+  background-image: 
+    radial-gradient(#ffffff 15%, transparent 16%),
+    radial-gradient(#ffffff 15%, transparent 16%);
+  background-size: 20px 20px;
+  background-position: 0 0, 10px 10px;
+  background-blend-mode: overlay;
+}
+
+/* 装饰：方块阵也变圆（组件级微调，不动 DOM） */
+/*.wf-theme[data-wf-theme="clay"] .wf-heat {
+  border-radius: 7px;
+}*/
+
+/* Phase 17 签名元素：卡片左上角一道「捏出来的高光」（黏土感，纯伪元素） */
+/*.wf-theme[data-wf-theme="clay"] .wf-card::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-top: 2px solid rgb(255 255 255 / 0.75);
+  border-left: 2px solid rgb(255 255 255 / 0.55);
+  border-radius: inherit;
+  opacity: 0.7;
+  pointer-events: none;
+}*/
+
+/* 1. 卡片本体：只加阴影，不碰背景和边框 */
+.wf-theme[data-wf-theme="clay"] .wf-card {
+  /* 核心：黏土光影魔法 */
+  box-shadow: 
+    /* 外部环境投影（稍微带点柔和的紫灰色，不要纯黑） */
+    0 8px 16px rgba(110, 80, 150, 0.08),
+    
+    /* 左上角：白色内阴影，模拟受光面的凸起 */
+    inset 3px 3px 6px rgba(255, 255, 255, 0.8),
+    inset 1px 1px 2px rgba(255, 255, 255, 0.9),
+    
+    /* 右下角：深色内阴影，模拟边缘的厚度 */
+    inset -3px -3px 6px rgba(110, 80, 150, 0.12);
+}
+
+/* 2. 左上角捏痕高光（你的原有逻辑，稍微提亮一点更明显） */
+.wf-theme[data-wf-theme="clay"] .wf-card::after {
+  content: "";
+  position: absolute;
+  inset: 2px; /* 稍微往里收一点，配合阴影 */
+  border-top: 2px solid rgba(255, 255, 255, 0.85);
+  border-left: 2px solid rgba(255, 255, 255, 0.65);
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+/* 3. 方块阵：只加微小的立体感 */
+.wf-theme[data-wf-theme="clay"] .wf-heat {
+  border-radius: 7px;
+  border-top-left-radius: 4px;
+  border-bottom-left-radius: 4px;
+  box-shadow: 
+    inset 1px 1px 2px rgba(255, 255, 255, 0.6), 
+    0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+body.theme-dark .wf-theme[data-wf-theme="clay"],
+:root.theme-dark .wf-theme[data-wf-theme="clay"] {
+  --wf-panel-bg: #241f33;
+  --wf-panel-border: #3a3350;
+  --wf-lane-bg: #2c2640;
+  --wf-card-border: #443b5e;
+  --wf-card-open-bg: #4a3b57;
+  --wf-card-done-bg: #302a45;
+  --wf-line-color: #554a72;
+  --wf-status-todo: #b0a8c6;
+  --wf-status-doing: #9aa8ff;
+  --wf-status-done: #6fe0bd;
+  --wf-status-blocked: #ff9ac0;
+  --wf-status-cancelled: #8c84a3;
+  --wf-heat-muted: #3a3350;
+  /* Phase 10：暗色系统 = 常暗底 + 深底可读的马卡龙 6 色 */
+  --wf-gantt-track-bg: #2c2640;
+  --wf-gantt-track-line: rgb(255 255 255 / 0.18);
+  --wf-gantt-c0: #ff9ac0;
+  --wf-gantt-c1: #8a7cf0;
+  --wf-gantt-c2: #5fd6b0;
+  --wf-gantt-c3: #ffc46b;
+  --wf-gantt-c4: #6bb8ff;
+  --wf-gantt-c5: #c98fe0;
+  --wf-timer-bg: #6c5ce7;
+  --wf-timer-fg: #ffffff;
+  --wf-card-shadow: 7px 7px 16px rgb(0 0 0 / 0.5), -4px -4px 12px rgb(255 255 255 / 0.07);
+}
+
+/* ---- ⑥ 网页风（v0.8）：90 年代早期互联网 —— 白底、纯蓝链接、直边、故意低保真 ---- */
+
+.wf-theme[data-wf-theme="web"] {
+  --wf-panel-bg: #ffffff;
+  --wf-panel-border: #808080;
+  --wf-panel-radius: 0px;
+  --wf-lane-bg: #ffffff;
+  --wf-radius-lane: 0px;
+  --wf-radius-card: 0px;
+  --wf-radius-btn: 0px;
+  --wf-card-border: #808080;
+  --wf-card-open-bg: #ffffcc;
+  --wf-card-done-bg: #f0f0f0;
+  --wf-card-shadow: none;
+  --wf-line-color: #808080;
+  --wf-status-todo: #444444;
+  --wf-status-doing: #0000ee;
+  --wf-status-done: #007700;
+  --wf-status-blocked: #cc0000;
+  --wf-status-cancelled: #808080;
+  --wf-heat-muted: #d8d8d8;
+  /* Phase 10：浅色系统（白底 + 早期网络安全色的深饱和版） */
+  --wf-gantt-track-bg: #ffffff;
+  --wf-gantt-track-line: rgb(0 0 238 / 0.2);
+  --wf-gantt-c0: #0000ee;
+  --wf-gantt-c1: #cc0000;
+  --wf-gantt-c2: #007700;
+  --wf-gantt-c3: #b35c00;
+  --wf-gantt-c4: #8b008b;
+  --wf-gantt-c5: #008b8b;
+  --wf-timer-bg: #000000;
+  --wf-timer-fg: #00ff00;
+  --wf-timer-radius: 0px;
+  --wf-clock-font: var(--font-monospace);
+  --wf-title-font: "Times New Roman", Times, serif;
+  --wf-body-font: "Times New Roman", Times, serif;
+}
+
+
+
+.wf-theme[data-wf-theme="web"] .wf-card {
+  border-style: solid;
+  border-width: 1px;
+}
+
+.wf-theme[data-wf-theme="web"] .wf-card-title {
+  color: #0000ee;
+  text-decoration: underline;
+}
+
+.wf-theme[data-wf-theme="web"] .wf-card-title:hover {
+  color: #551a8b;
+}
+
+.wf-theme[data-wf-theme="web"] a,
+.wf-theme[data-wf-theme="web"] a:hover {
+  color: #0000ee;
+  text-decoration: underline;
+}
+/* 将 web 主题下的概览模块设为透明、无边框、无阴影 */
+.wf-theme[data-wf-theme="web"] .wf-overview {
+  background: transparent !important; /* 强制背景透明 */
+  border: none !important;            /* 强制去掉边框 */
+  box-shadow: none !important;        /* 去掉自带的卡片阴影 */
+  text-align: left !important;
+}
+.wf-theme[data-wf-theme="web"] .wf-timer-resume {
+  justify-content: flex-start !important; 
+}
+
+body.theme-dark .wf-theme[data-wf-theme="web"],
+:root.theme-dark .wf-theme[data-wf-theme="web"] {
+  --wf-panel-bg: #101010;
+  --wf-panel-border: #7c7c7c;
+  --wf-lane-bg: #0a0a0a;
+  --wf-card-border: #7c7c7c;
+  --wf-card-open-bg: #2a2a12;
+  --wf-card-done-bg: #1a1a1a;
+  --wf-line-color: #6e6e6e;
+  --wf-status-todo: #b0b0b0;
+  --wf-status-doing: #7aa7ff;
+  --wf-status-done: #57d68d;
+  --wf-status-blocked: #ff6b6b;
+  --wf-status-cancelled: #8c8c8c;
+  --wf-heat-muted: #2a2a2a;
+  /* Phase 10：暗色系统 = 黑底 + 抬亮版网络安全色（原来的 #0000ee 在纯黑上几乎看不见） */
+  --wf-gantt-track-bg: #000000;
+  --wf-gantt-track-line: rgb(255 255 255 / 0.28);
+  --wf-gantt-c0: #6b7cff;
+  --wf-gantt-c1: #ff5f5f;
+  --wf-gantt-c2: #35d07f;
+  --wf-gantt-c3: #ffa64d;
+  --wf-gantt-c4: #d46bd4;
+  --wf-gantt-c5: #3fc9c9;
+}
+
+.theme-dark .wf-theme[data-wf-theme="web"] .wf-card-title,
+:root.theme-dark .wf-theme[data-wf-theme="web"] .wf-card-title {
+  color: #7aa7ff;
+}
+
+.theme-dark .wf-theme[data-wf-theme="web"] a,
+:root.theme-dark .wf-theme[data-wf-theme="web"] a {
+  color: #7aa7ff;
+}
+
+/* ---- ⑦ 清新风（v0.8）：天空蓝渐变 + 半透毛玻璃面板 ---- */
+
+.wf-theme[data-wf-theme="fresh"] {
+  --wf-panel-bg: rgb(255 255 255 / 0.62);
+  --wf-panel-border: rgb(120 178 226 / 0.38);
+  --wf-panel-radius: 16px;
+  --wf-lane-bg: rgb(255 255 255 / 0.52);
+  --wf-radius-lane: 18px;
+  --wf-radius-card: 14px;
+  --wf-radius-btn: 999px;
+  --wf-card-border: rgb(120 178 226 / 0.45);
+  --wf-card-open-bg: rgb(210 236 255 / 0.85);
+  --wf-card-done-bg: rgb(255 255 255 / 0.8);
+  --wf-card-shadow: 0 4px 14px rgb(53 135 200 / 0.12);
+  --wf-line-color: rgb(120 178 226 / 0.55);
+  --wf-status-todo: #6d8ba6;
+  --wf-status-doing: #1f8fd6;
+  --wf-status-done: #2eb78e;
+  --wf-status-blocked: #e5674f;
+  --wf-status-cancelled: #a3b8ca;
+  --wf-heat-muted: #dceefb;
+  /* Phase 10：浅色系统（浅蓝底 + 深饱和的蓝绿 6 色） */
+  --wf-gantt-track-bg: #e6f2fb;
+  --wf-gantt-track-line: rgb(31 143 214 / 0.2);
+  --wf-gantt-c0: #1877b8;
+  --wf-gantt-c1: #0f9c74;
+  --wf-gantt-c2: #5560c9;
+  --wf-gantt-c3: #b8741a;
+  --wf-gantt-c4: #c94a74;
+  --wf-gantt-c5: #0f8fa8;
+  --wf-timer-bg: #1f8fd6;
+  --wf-timer-fg: #ffffff;
+  --wf-timer-radius: 18px;
+  --wf-clock-font: var(--font-monospace);
+  /* 装饰：天空蓝 → 草地绿渐变铺在渲染容器上（phase10：底部换成草地绿，只加背景，不动 DOM） */
+  background-image: linear-gradient(165deg, #dff1ff 0%, #f6fbff 42%, #e8f6e9 74%, #cfe9cf 100%);
+}
+
+.wf-theme[data-wf-theme="fresh"] {
+  --wf-status-bar-height: 90%; 
+}
+/* 装饰：毛玻璃面板 */
+.wf-theme[data-wf-theme="fresh"] .wf-overview,
+.wf-theme[data-wf-theme="fresh"] .wf-lane,
+.wf-theme[data-wf-theme="fresh"] .wf-timer {
+  backdrop-filter: blur(8px) saturate(120%);
+  -webkit-backdrop-filter: blur(8px) saturate(120%);
+}
+
+body.theme-dark .wf-theme[data-wf-theme="fresh"],
+:root.theme-dark .wf-theme[data-wf-theme="fresh"] {
+  --wf-panel-bg: rgb(255 255 255 / 0.06);
+  --wf-panel-border: rgb(120 190 240 / 0.24);
+  --wf-lane-bg: rgb(255 255 255 / 0.04);
+  --wf-card-border: rgba(105, 142, 166, 0.63);
+  --wf-card-open-bg: rgba(72, 207, 244, 0.447);
+  --wf-card-done-bg: rgba(255, 255, 255, 0.353);
+  --wf-card-shadow: 0 4px 16px rgb(0 0 0 / 0.35);
+  --wf-line-color: rgb(120 190 240 / 0.4);
+  --wf-status-todo: #96cffe;
+  --wf-status-doing: #116edff0;
+  --wf-status-done: #09ae77;
+  --wf-status-blocked: #f74927;
+  --wf-status-cancelled: #757a7f;
+  --wf-heat-muted: #203a52;
+  /* Phase 10：暗色系统 = 常暗底 + 深底可读的通透蓝绿 6 色 */
+  --wf-gantt-track-bg: #16324a;
+  --wf-gantt-track-line: rgb(255 255 255 / 0.22);
+  --wf-gantt-c0: #35a7f2;
+  --wf-gantt-c1: #2ec9a8;
+  --wf-gantt-c2: #7f8cf5;
+  --wf-gantt-c3: #f2a65a;
+  --wf-gantt-c4: #ef7b9c;
+  --wf-gantt-c5: #4fc3f7;
+  background-image: linear-gradient(165deg, #23698f 0%, #a7b57e 55%, #b9b9a9 100%);
+}
+
+.wf-theme[data-wf-theme="fresh"] .wf-app-title {
+  text-shadow: 
+    0 0 4px rgba(255, 255, 255, 0.9),  
+    0 0 12px rgba(255, 255, 255, 0.6),  
+    0 0 24px rgba(255, 255, 255, 0.3);  
+}
+
+.wf-theme[data-wf-theme="fresh"] .wf-card-title,
+.wf-theme[data-wf-theme="fresh"] .wf-lane-title,
+.wf-theme[data-wf-theme="fresh"] .wf-block-title,
+.wf-theme[data-wf-theme="fresh"] .wf-app-title {
+  font-weight: 400 ;
+}
+
+.theme-dark .wf-theme[data-wf-theme="fresh"] .wf-lane-title {
+  color: #f9f9fd;
+}
+.wf-theme[data-wf-theme="fresh"] .wf-card-summary,
+.wf-theme[data-wf-theme="fresh"] .wf-card-part,
+.wf-theme[data-wf-theme="fresh"] .wf-card-line,
+.wf-theme[data-wf-theme="fresh"] .wf-card-meta,
+.wf-theme[data-wf-theme="fresh"] .wf-card-title,
+.wf-theme[data-wf-theme="fresh"] .wf-card {
+  color: #2c2c2c;
+}
+.wf-theme[data-wf-theme="fresh"] .wf-card-meta,
+.wf-theme[data-wf-theme="fresh"] .wf-card {
+  font-weight: 300 ;
+}
+
+
+/*
+.wf-theme[data-wf-theme="fresh"] .wf-overview,
+.wf-theme[data-wf-theme="fresh"] .wf-lane,
+.wf-theme[data-wf-theme="fresh"] .wf-timer {
+  backdrop-filter: blur(8px) saturate(120%);
+  -webkit-backdrop-filter: blur(8px) saturate(120%);
+}
+
+.wf-theme[data-wf-theme="fresh"] .wf-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(circle at 88% 10%, rgb(255 255 255 / 0.8), transparent 42%);
+  pointer-events: none;
+}
+
+.theme-dark .wf-theme[data-wf-theme="fresh"] .wf-card::after,
+:root.theme-dark .wf-theme[data-wf-theme="fresh"] .wf-card::after {
+  background: radial-gradient(circle at 88% 10%, rgb(150 210 255 / 0.22), transparent 42%);
+}
+*/
+/*
+body.theme-dark .wf-theme[data-wf-theme="fresh"],
+:root.theme-dark .wf-theme[data-wf-theme="fresh"] {
+  --wf-panel-bg: rgb(255 255 255 / 0.06);
+  --wf-panel-border: rgb(120 190 240 / 0.24);
+  --wf-lane-bg: rgb(255 255 255 / 0.04);
+  --wf-card-border: rgb(120 190 240 / 0.3);
+  --wf-card-open-bg: rgb(48 104 148 / 0.55);
+  --wf-card-done-bg: rgb(255 255 255 / 0.05);
+  --wf-card-shadow: 0 4px 16px rgb(0 0 0 / 0.35);
+  --wf-line-color: rgb(120 190 240 / 0.4);
+  --wf-status-todo: #93b2cc;
+  --wf-status-doing: #63c1ff;
+  --wf-status-done: #4fd6a8;
+  --wf-status-blocked: #ff8a72;
+  --wf-status-cancelled: #7f93a6;
+  --wf-heat-muted: #203a52;
+  --wf-gantt-track-bg: #16324a;
+  --wf-gantt-track-line: rgb(255 255 255 / 0.22);
+  --wf-gantt-c0: #35a7f2;
+  --wf-gantt-c1: #2ec9a8;
+  --wf-gantt-c2: #7f8cf5;
+  --wf-gantt-c3: #f2a65a;
+  --wf-gantt-c4: #ef7b9c;
+  --wf-gantt-c5: #4fc3f7;
+  background-image: linear-gradient(165deg, #0c1b2a 0%, #102a3f 55%, #13301f 100%);
+}*/
+
+/* ---- ⑧ 少女风（v0.8）：粉色主调 + 网点纹理 + 缎带标题 + 星星闪光 + 爱心 ---- */
+
+.wf-theme[data-wf-theme="shoujo"] {
+  --wf-panel-bg: #fff5f9;
+  --wf-panel-border: #f6c9dc;
+  --wf-panel-radius: 18px;
+  --wf-lane-bg: #fffafd;
+  --wf-radius-lane: 20px;
+  --wf-radius-card: 16px;
+  --wf-radius-btn: 999px;
+  --wf-card-border: #f3bcd4;
+  --wf-card-open-bg: #ffe4ef;
+  --wf-card-done-bg: #fff0f7;
+  --wf-card-shadow: 0 4px 12px rgb(238 143 180 / 0.22);
+  --wf-line-color: #f0b9cf;
+  --wf-status-todo: #b58aa0;
+  --wf-status-doing: #ef4f8b;
+  --wf-status-done: #a86bd1;
+  --wf-status-blocked: #d23b4e;
+  --wf-status-cancelled: #cbb3c0;
+  --wf-heat-muted: #fbe3ee;
+  /* Phase 10：浅色系统（粉白底 + 深饱和的粉紫 6 色） */
+  --wf-gantt-track-bg: #fdeaf2;
+  --wf-gantt-track-line: rgb(240 98 154 / 0.22);
+  --wf-gantt-c0: #d6337a;
+  --wf-gantt-c1: #8a4fbf;
+  --wf-gantt-c2: #c47b12;
+  --wf-gantt-c3: #2f9c8f;
+  --wf-gantt-c4: #e0356d;
+  --wf-gantt-c5: #4a5bd0;
+  --wf-timer-bg: #ff6f9c;
+  --wf-timer-fg: #ffffff;
+  --wf-timer-radius: 999px;
+  --wf-clock-font: var(--font-monospace);
+  /* 装饰：网点纹理（半调点阵）铺在渲染容器上 */
+  background-color: #fff7fb;
+  background-image: radial-gradient(circle, rgb(255 111 156 / 0.16) 1px, transparent 1px);
+  background-size: 10px 10px;
+  --wf-clock-font: 'Iowan Old Style', 'Palatino Linotype', 'Songti SC', 'STSong', Georgia, serif;
+  --wf-body-font: 'Iowan Old Style', 'Palatino Linotype', 'Songti SC', 'STSong', Georgia, serif;
+  
+}
+.wf-theme[data-wf-theme="shoujo"] {
+  --wf-status-bar-height: 90%; 
+}
+/* 装饰：缎带横幅标题（两端剪出燕尾） */
+/*.wf-theme[data-wf-theme="shoujo"] .wf-block-title,
+.wf-theme[data-wf-theme="shoujo"] .wf-lane-title {
+  display: inline-block;
+  padding: 2px 16px;
+  color: #ffffff;
+  background: linear-gradient(90deg, #ff9ec7, #ff6f9c);
+  clip-path: polygon(0 0, 100% 0, calc(100% - 9px) 50%, 100% 100%, 0 100%, 9px 50%);
+}*/
+
+
+.wf-theme[data-wf-theme="shoujo"] .wf-card-summary,
+.wf-theme[data-wf-theme="shoujo"] .wf-card-part,
+.wf-theme[data-wf-theme="shoujo"] .wf-card-line,
+.wf-theme[data-wf-theme="shoujo"] .wf-card-meta,
+.wf-theme[data-wf-theme="shoujo"] .wf-card-title,
+.wf-theme[data-wf-theme="shoujo"] .wf-card,
+.wf-theme[data-wf-theme="shoujo"] .wf-lane-title,
+.wf-theme[data-wf-theme="shoujo"] .wf-block-title,
+.wf-theme[data-wf-theme="shoujo"] .wf-app-title {
+  letter-spacing: 0.05em; /* 略微拉开字距，增加呼吸感 */
+}
+
+
+.wf-theme[data-wf-theme="shoujo"] .wf-lane-title {
+  display: inline-block;
+  padding: 2px 16px;
+  color: #ffffff;
+  background: linear-gradient(90deg, #ff9ec7, #ff6f9c);
+  clip-path: polygon(0 0, 100% 0, calc(100% - 9px) 50%, 100% 100%, 0 100%, 9px 50%);
+}
+
+/* 装饰：蕾丝感双层边框
+   Phase 18 ⑥：双层边框只留在「状态总览」上（与 web 的 outset 同理：套在泳道上就是复刻外壳）。 */
+.wf-theme[data-wf-theme="shoujo"] .wf-overview {
+  text-align: center;
+  border-style: double;
+  border-width: 3px;
+  box-shadow: inset 0 0 0 2px #fff1f7, 0 3px 12px rgb(238 143 180 / 0.14);
+}
+
+/* 装饰：卡片右上角的多角星闪光 */
+.wf-theme[data-wf-theme="shoujo"] .wf-card::after {
+  content: "✦";
+  position: absolute;
+  top: -8px;
+  right: -6px;
+  color: #ff9ec7;
+  font-size: 0.9em;
+  line-height: 1;
+  pointer-events: none;
+  animation: wf-shoujo-twinkle 2.6s ease-in-out infinite;
+}
+
+/* 装饰：已完成节点挂一颗爱心 */
+.wf-theme[data-wf-theme="shoujo"] .wf-card--done .wf-card-title::before {
+  content: "♥ ";
+  color: #ff6f9c;
+}
+
+@keyframes wf-shoujo-twinkle {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.85) rotate(0deg);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15) rotate(18deg);
+  }
+}
+
+body.theme-dark .wf-theme[data-wf-theme="shoujo"],
+:root.theme-dark .wf-theme[data-wf-theme="shoujo"] {
+  --wf-panel-bg: #2a1622;
+  --wf-panel-border: #5b2f47;
+  --wf-lane-bg: #331b29;
+  --wf-card-border: #6b3550;
+  --wf-card-open-bg: #4a2438;
+  --wf-card-done-bg: #3a2130;
+  --wf-card-shadow: 0 4px 14px rgb(0 0 0 / 0.4);
+  --wf-line-color: #7a4059;
+  --wf-status-todo: #c9a6b8;
+  --wf-status-doing: #ff8fc0;
+  --wf-status-done: #c79bf0;
+  --wf-status-blocked: #ff7a8a;
+  --wf-status-cancelled: #9d8492;
+  --wf-heat-muted: #45293a;
+  /* Phase 10：暗色系统 = 常暗底 + 深底可读的粉紫 6 色 */
+  --wf-gantt-track-bg: #3a1f30;
+  --wf-gantt-track-line: rgb(255 255 255 / 0.2);
+  --wf-gantt-c0: #ff8fc0;
+  --wf-gantt-c1: #c79bf0;
+  --wf-gantt-c2: #ffb347;
+  --wf-gantt-c3: #7fd1c7;
+  --wf-gantt-c4: #ff6f9c;
+  --wf-gantt-c5: #9aa8ff;
+  background-color: #241320;
+  background-image: radial-gradient(circle, rgb(255 143 192 / 0.12) 1px, transparent 1px);
+  background-size: 10px 10px;
+}
+
+/* ------------------------------------------------------------------ *
+ * Phase 7：节点进度条（progress / progress_max，0-999，缺省 0 / 1）
+ * 颜色沿用状态色 token，主题无需额外覆盖
+ * ------------------------------------------------------------------ */
+
+.wf-card-progress {
+  height: 6px;
+  margin: 4px 0 2px;
+  border-radius: 3px;
+  background: var(--wf-heat-muted, #e5e5e5);
+  overflow: hidden;
+}
+
+.wf-card-progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--wf-status-doing, #5b8def);
+  transition: width 0.2s ease;
+}
+
+/* 已完成的卡片：进度条用完成色 */
+.wf-card--done .wf-card-progress-fill {
+  background: var(--wf-status-done, #2e9e6b);
+}
+
+/* 受阻 / 取消：进度条降饱和，避免误读为「在推进」 */
+.wf-card--blocked .wf-card-progress-fill {
+  background: var(--wf-status-blocked, #d9822b);
+}
+
+.wf-card--cancelled .wf-card-progress-fill {
+  background: var(--wf-status-cancelled, #9e9e9e);
+}
+
+/* 必填项的红色星号（Modal 里的标题 / 工作流名） */
+.wfjson-required {
+  color: var(--text-error, #c62828);
+  font-weight: 700;
+}
+
+.wfjson-row-required .wfjson-field-label {
+  font-weight: 600;
+}
+
+/* ---- Phase 9：年 / 月 / 日 三文本框（截止日） ---- */
+
+.wfjson-date {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.wfjson-date .wfjson-input {
+  min-width: 0;
+}
+
+.wfjson-date-year {
+  flex: 1 1 45%;
+}
+
+.wfjson-date-month,
+.wfjson-date-day {
+  flex: 1 1 25%;
+}
+
+/* ---- Phase 9：删除弹窗二选一 ---- */
+
+.wfjson-delete-choice {
+  margin: 10px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+}
+
+.wfjson-delete-choice-title {
+  margin-bottom: 6px;
+  font-size: 0.85em;
+  color: var(--text-muted);
+}
+
+.wfjson-radio {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  cursor: pointer;
+}
+
+/* ---- Phase 9：暗色下未选中的 <select> 选项文字可读 ---- */
+
+.theme-dark .wfjson-modal select option,
+.theme-dark .wf-view select option {
+  background: var(--background-primary);
+  color: var(--text-normal);
+}
+
+/* ---- Phase 9：甘特图周与周之间的横分割线（每 7 行一组） ---- */
+
+.wf-gantt-row--week-start {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--wf-gantt-track-line, rgb(255 255 255 / 0.16));
+}
+
+/* ---- Phase 9：正在进行块的工作流切换栏 ---- */
+
+.wf-lane-switcher {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 8px;
+}
+
+.wf-lane-switch-btn {
+  flex: 0 0 auto;
+  width: auto;
+  height: auto;
+  padding: 1px 9px;
+  border: 1px solid var(--wf-panel-border);
+  border-radius: var(--wf-radius-btn);
+  background: var(--interactive-normal);
+  color: var(--text-normal);
+  box-shadow: none;
+  font-size: 0.8em;
+  line-height: 1.6;
+}
+
+.wf-lane-switch-btn:hover:not(:disabled) {
+  background: var(--interactive-hover);
+}
+
+.wf-lane-switch-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* v0.7 §⑨-6：DOM 顺序 [◀][名称][计数][▶] —— 名称占据中间弹性区并居中，▶ 自然靠右 */
+.wf-lane-switch-name {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.wf-lane-switch-title {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wf-lane-color {
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  border: 1px solid rgb(0 0 0 / 0.18);
+}
+
+.wf-lane-switch-count {
+  flex: 0 0 auto;
+  font-size: 0.72em;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.wf-lane-switcher-body {
+  min-width: 0;
+}
+
+/* ==========================================================================
+   Phase 15（契约 doc/datacontact/data_ixd_discuss_interact_v0.9.md §⑤）
+   ① 「正在进行」块尾的「修改节点顺序」开关：复用 `.wf-block-btn`，开态只加描边 / 填充
+   ② 可拖卡片：`.wf-card--draggable` / `.wf-card--dragging`（只换 cursor，不改原视觉）
+   ③ 落点指示：`.wf-card--drop-before` / `.wf-card--drop-after`（inset 实线，不占布局）
+   ========================================================================== */
+
+/* 块尾同一行的两个按钮（「修改节点顺序」开关 + 「⚙️ 修改工作流…」）之间留一点间距 */
+.wf-block-actions > .wf-block-btn + .wf-block-btn {
+  margin-left: 8px;
+}
+
+/* 开关「开」态：主题色填充（9 套主题都靠 --interactive-accent 系 token 自动跟随） */
+.wf-reorder-toggle--on {
+  border-color: var(--interactive-accent);
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.wf-reorder-toggle--on:hover {
+  background: var(--interactive-accent-hover, var(--interactive-accent));
+}
+
+/* 可拖卡片：只换 cursor；拖动过程中抓手闭合 */
+.wf-card--draggable {
+  cursor: grab;
+}
+
+.wf-card--dragging,
+.wf-card--draggable:active {
+  cursor: grabbing;
+}
+
+/* 落点指示：上沿 = 插到它之前（同级）；下沿 = 成为它的子节点（inset 不撑动布局） */
+.wf-card--drop-before {
+  box-shadow: inset 0 2px 0 var(--interactive-accent);
+}
+
+.wf-card--drop-after {
+  box-shadow: inset 0 -2px 0 var(--interactive-accent);
+}
+
+/* ==========================================================================
+   Phase 18 ④ / Phase 19 M1 · 365 天 emo 小工具（画布 / 拍立得 / 输入弹窗）
+
+   配色**不进 `[data-wf-theme]`**：三套独立主题全写在 `.wf-emo--<theme>` 命名空间里
+   （默认 / 织布 / 糖果），变量挂在 `.wf-widget-popup--emo` 自己身上。
+   样式由日期派生（颜色 = emoColorIndex、糖果角度 = emoAngleIndex），不落盘。
+   层级：弹窗 9998 < 甘特 tooltip 10000 < 拍立得 10001 < 输入弹窗 10002 < 右键菜单背板 10003。
+   ========================================================================== */
+
+.wf-widget-popup--emo {
+  --wf-emo-c1: #e5484d; /* 红 */
+  --wf-emo-c2: #f08c1f; /* 橙 */
+  --wf-emo-c3: #2f9e6b; /* 绿 */
+  --wf-emo-c4: #2f7fd0; /* 蓝 */
+  --wf-emo-c5: #8055c8; /* 紫 */
+  --wf-emo-c6: #d4578f; /* 粉 */
+  /* 纸 / 墨 / 灰 / 线全部走 Obsidian token（补充契约②）：半透明纸面 = 原生 Modal 同款 */
+  --wf-emo-ink: var(--text-normal);
+  --wf-emo-muted: var(--text-muted);
+  --wf-emo-faint: var(--text-faint);
+  --wf-emo-paper: var(--modal-background, var(--background-primary));
+  /* Phase 19 补充契约⑨：全屏**幕布** —— 背景层半透明，能透出背后的界面；
+     内容浮层（拍立得 / 输入弹窗 / 菜单 / 灵动岛 / 缩放角标）仍用不透明的 `--wf-emo-paper`。
+     用 color-mix 兜底：`--modal-background` 在部分主题里不透明，混 45% 透明后必然能看穿。 */
+  --wf-emo-veil: color-mix(in srgb, var(--wf-emo-paper) 55%, transparent);
+  --wf-emo-field: var(--background-modifier-form-field, var(--background-secondary));
+  --wf-emo-line: var(--background-modifier-border);
+  /* 唯一保留的字面色：饱和色块上的反白字（色块本身不随主题） */
+  --wf-emo-on-color: #ffffff;
+  --wf-emo-cell: 18px; /* 与 views/emoWidget.ts 的 EMO_CELL_PX 保持一致（算内容尺寸用） */
+  --wf-emo-gap: 3px;
+  --wf-emo-radius: 4px;
+}
+
+/* 全屏画布：`.wf-emo` 撑满弹窗内容区，只有 chrome（标题条 / 灵动岛 / 缩放）浮在上面 */
+.wf-emo {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  color: var(--wf-emo-ink);
+}
+
+.wf-emo-canvas {
+  position: relative;
+  flex: 1 1 auto;
+  overflow: hidden;
+  width: 100%;
+  min-height: 0;
+  background: var(--wf-emo-veil);
+  /* 只留轻微磨砂：20px 会把背后的笔记糊成一团（等于看不见），6px 既能分层又看得清 */
+  -webkit-backdrop-filter: blur(6px) saturate(1.1);
+  backdrop-filter: blur(6px) saturate(1.1);
+  cursor: grab;
+  touch-action: none;
+}
+
+.wf-emo-canvas--dragging {
+  cursor: grabbing;
+}
+
+/* 灵动岛：画布上方的主题切换按钮 —— fixed，不随平移 / 缩放移动 */
+.wf-emo-theme {
+  position: fixed;
+  top: 58px;
+  left: 50%;
+  z-index: 9999;
+  height: auto;
+  padding: 6px 16px;
+  transform: translateX(-50%);
+  border: 1px solid var(--wf-emo-line);
+  border-radius: 999px;
+  background: var(--wf-emo-paper);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  backdrop-filter: blur(20px) saturate(1.2);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.14);
+  color: var(--wf-emo-ink);
+  cursor: pointer;
+  font-size: 0.84em;
+  letter-spacing: 0.06em;
+}
+
+.wf-emo-theme:hover {
+  background: var(--background-modifier-hover);
+}
+
+/* 网格：20×20；`transform-origin` 必须是左上角，否则 translate/scale 的数学与 clampPan 对不上 */
+.wf-emo-plane {
+  display: grid;
+  grid-template: repeat(20, var(--wf-emo-cell)) / repeat(20, var(--wf-emo-cell));
+  gap: var(--wf-emo-gap);
+  padding: var(--wf-emo-gap);
+  width: max-content;
+  transform-origin: 0 0;
+}
+
+/* 364 个日期格（1 起算的 (x, y) 由视图写成 grid-row / grid-column） */
+.wf-emo-cell {
+  position: relative;
+  display: flex;
+  overflow: hidden;
+  align-items: center;
+  justify-content: center;
+  width: var(--wf-emo-cell);
+  height: var(--wf-emo-cell);
+  border-radius: var(--wf-emo-radius);
+  cursor: pointer;
+}
+
+/* 无记录：只有灰度 UI（虚线描边 + 透明底） */
+.wf-emo-cell--empty {
+  border: 1px dashed var(--wf-emo-line);
+  background: transparent;
+}
+
+/* 有记录：按日期散列分配 6 色之一（--c1 … --c6 由视图挂 class） */
+.wf-emo-cell--recorded.wf-emo-cell--c1 { background: var(--wf-emo-c1); }
+.wf-emo-cell--recorded.wf-emo-cell--c2 { background: var(--wf-emo-c2); }
+.wf-emo-cell--recorded.wf-emo-cell--c3 { background: var(--wf-emo-c3); }
+.wf-emo-cell--recorded.wf-emo-cell--c4 { background: var(--wf-emo-c4); }
+.wf-emo-cell--recorded.wf-emo-cell--c5 { background: var(--wf-emo-c5); }
+.wf-emo-cell--recorded.wf-emo-cell--c6 { background: var(--wf-emo-c6); }
+
+/* 默认主题：内描边框（§①「每一个小正方形有内描边框」） */
+.wf-emo--default .wf-emo-cell--recorded {
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.5),
+    inset 0 0 0 2px rgb(0 0 0 / 0.08);
+}
+
+/* 默认主题的格内内容：有图缩略图 / 无图文字前半截断（背景仍 = 该日期色） */
+.wf-emo-cell-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.wf-emo-cell-text {
+  display: -webkit-box;
+  overflow: hidden;
+  padding: 1px;
+  color: var(--wf-emo-on-color);
+  font-size: 0.46em;
+  line-height: 1.1;
+  text-shadow: 0 1px 1px rgb(0 0 0 / 0.28);
+  word-break: break-all;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+/* 织布 / 糖果：格里只留纹理，不显示照片 / 正文（§① 后两套的样式描述） */
+.wf-emo--weave .wf-emo-cell-img,
+.wf-emo--weave .wf-emo-cell-text,
+.wf-emo--candy .wf-emo-cell-img,
+.wf-emo--candy .wf-emo-cell-text {
+  display: none;
+}
+
+/* 越靠外越淡（朝背景收敛：深色系统变暗、浅色系统变淡）；环 1~2 保持 1 */
+.wf-emo-cell--r3 { opacity: 0.85; }
+.wf-emo-cell--r4 { opacity: 0.72; }
+.wf-emo-cell--r5 { opacity: 0.6; }
+.wf-emo-cell--r6 { opacity: 0.48; }
+.wf-emo-cell--r7 { opacity: 0.36; }
+
+.wf-emo-cell:hover {
+  outline: 2px solid var(--wf-emo-ink);
+  outline-offset: 1px;
+}
+
+/* ------------------------------------------------------------------ *
+ * 三套 emo 独立主题（Phase 19 M1 ①）：只换变量 / 纹理 / 角度，DOM 不变
+ * ------------------------------------------------------------------ */
+
+/* default：6 色 + 内描边（基线，见上面的 `.wf-emo--default` 规则） */
+.wf-emo--default {
+  --wf-emo-gap: 3px;
+  --wf-emo-radius: 4px;
+}
+
+/* weave：牛仔蓝 ×3 + 牛仔棕 ×3 + 鹅黄无记录；格间空隙极小（织布一体） */
+.wf-emo--weave {
+  --wf-emo-c1: #3c5a86;
+  --wf-emo-c2: #4f6f9e;
+  --wf-emo-c3: #6d8cb6;
+  --wf-emo-c4: #8a5a3c;
+  --wf-emo-c5: #a9744f;
+  --wf-emo-c6: #c2926b;
+  --wf-emo-gap: 1px;
+  --wf-emo-radius: 2px;
+}
+
+/* 6 种布纹各管一色（补充契约③）：都是白经纬叠在 6 色布上，平铺尺寸互不相同 */
+.wf-emo--weave .wf-emo-cell {
+  background-repeat: repeat;
+}
+
+/* c1 牛仔蓝 · 平纹：1×1 交点网点，4px */
+.wf-emo--weave .wf-emo-cell--c1 {
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Cpath d='M0 0h2v2H0zM2 2h2v2H2z' fill='%23ffffff' fill-opacity='0.14'/%3E%3C/svg%3E");
+  background-size: 4px 4px;
+}
+
+/* c2 牛仔蓝 · 斜纹：45° 单向斜线，6px */
+.wf-emo--weave .wf-emo-cell--c2 {
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='6'%3E%3Cpath d='M-1 1L1 -1M0 6L6 0M5 7L7 5' stroke='%23ffffff' stroke-opacity='0.18' stroke-width='1.6'/%3E%3C/svg%3E");
+  background-size: 6px 6px;
+}
+
+/* c3 牛仔蓝 · 人字纹：折向交错斜线，8px */
+.wf-emo--weave .wf-emo-cell--c3 {
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Cpath d='M0 8L4 0L8 8' stroke='%23ffffff' stroke-opacity='0.2' stroke-width='1.2' fill='none'/%3E%3C/svg%3E");
+  background-size: 8px 8px;
+}
+
+/* c4 牛仔棕 · 篮织：2×1 交错块，6px */
+.wf-emo--weave .wf-emo-cell--c4 {
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='6'%3E%3Cpath d='M0 0h4v2H0zM2 3h4v2H2z' fill='%23ffffff' fill-opacity='0.16'/%3E%3C/svg%3E");
+  background-size: 6px 6px;
+}
+
+/* c5 牛仔棕 · 点纹：稀疏圆点，5px */
+.wf-emo--weave .wf-emo-cell--c5 {
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='5' height='5'%3E%3Ccircle cx='2.5' cy='2.5' r='0.9' fill='%23ffffff' fill-opacity='0.2'/%3E%3C/svg%3E");
+  background-size: 5px 5px;
+}
+
+/* c6 牛仔棕 · 对角纹：双向 45° 交叉网，7px */
+.wf-emo--weave .wf-emo-cell--c6 {
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7'%3E%3Cpath d='M0 0L7 7M7 0L0 7' stroke='%23ffffff' stroke-opacity='0.16' stroke-width='1.1'/%3E%3C/svg%3E");
+  background-size: 7px 7px;
+}
+
+.wf-emo--weave .wf-emo-cell--empty {
+  border: none;
+  /* 鹅黄布料也走半透明（补充契约⑨：背景层透出背后的界面） */
+  background-color: color-mix(in srgb, #f2dfa0 55%, transparent);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.07);
+}
+
+/* candy：马卡龙 6 色 + 角度 10°~180°；无记录 = 全透明；格间有空隙 */
+/*.wf-emo--candy {
+  --wf-emo-c1: #f28b93;
+  --wf-emo-c2: #f7bb84;
+  --wf-emo-c3: #9fd8ae;
+  --wf-emo-c4: #9cc3ea;
+  --wf-emo-c5: #c3a8e6;
+  --wf-emo-c6: #f3a9cd;
+  --wf-emo-gap: 5px;
+  --wf-emo-radius: 50%;
+}
+
+.wf-emo--candy .wf-emo-cell {
+  border-radius: 50% / 46%;
+  transform: rotate(var(--wf-emo-angle, 0deg));
+  background-image: linear-gradient(120deg, rgb(255 255 255 / 0.7), rgb(255 255 255 / 0) 55%);
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.7),
+    0 1px 2px rgb(0 0 0 / 0.08);
+}
+
+.wf-emo--candy .wf-emo-cell--empty {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}*/
+
+/* candy：马卡龙 6 色 + 角度 10°~180°；无记录 = 全透明；格间有空隙 */
+.wf-emo--candy {
+  --wf-emo-c1: #f28b93;
+  --wf-emo-c2: #f7bb84;
+  --wf-emo-c3: #9fd8ae;
+  --wf-emo-c4: #9cc3ea;
+  --wf-emo-c5: #c3a8e6;
+  --wf-emo-c6: #f3a9cd;
+  --wf-emo-gap: 5px;
+  
+  --candy-color: var(--wf-emo-c1); 
+  --candy-highlight: rgba(255, 255, 255, 0.9);
+}
+
+.wf-emo--candy .wf-emo-cell {
+  position: relative;
+  border-radius: 50%;
+  transform: rotate(var(--wf-emo-angle, 0deg));
+  
+  /* 核心：球体的基础色与多边形碎高光 */
+  background-color: var(--candy-color);
+  background-image: 
+    /* 1. 左上方强烈的多边形/菱形高光 */
+    linear-gradient(135deg, transparent 25%, var(--candy-highlight) 25%, var(--candy-highlight) 30%, transparent 30%),
+    linear-gradient(45deg, transparent 20%, rgba(255,255,255,0.7) 20%, rgba(255,255,255,0.7) 25%, transparent 25%),
+    /* 2. 右下方的一个小尖角反光，增加硬质感 */
+    linear-gradient(315deg, transparent 60%, rgba(255,255,255,0.5) 60%, rgba(255,255,255,0.5) 65%, transparent 65%),
+    /* 3. 底部暗角（让球体更立体） */
+    radial-gradient(circle at 70% 70%, rgba(0, 0, 0, 0.3) 0%, transparent 60%),
+    /* 4. 整个球体表面的细微网格褶皱 */
+    repeating-linear-gradient(45deg, transparent, transparent 4px, rgba(0,0,0,0.03) 4px, rgba(0,0,0,0.03) 5px);
+    
+  box-shadow:
+    inset 2px 2px 4px rgba(255, 255, 255, 0.8),
+    inset -3px -3px 6px rgba(0, 0, 0, 0.15),
+    0 2px 4px rgba(0, 0, 0, 0.1);
+    
+  overflow: visible; 
+}
+
+/* ================= 左侧：多边形撕裂拧结 ================= */
+.wf-emo--candy .wf-emo-cell::before {
+  content: '';
+  position: absolute;
+  top: 15%;
+  left: -32%;
+  width: 40%;
+  height: 70%;
+  
+  /* 使用 conic-gradient 模拟从中心向外放射的拧结折痕 */
+  background-image: 
+    /* 放射状折痕 */
+    conic-gradient(from 90deg at 100% 50%, 
+      var(--candy-color) 0deg, rgba(0,0,0,0.15) 20deg, 
+      var(--candy-color) 40deg, rgba(255,255,255,0.6) 60deg, 
+      var(--candy-color) 80deg, rgba(0,0,0,0.15) 100deg, 
+      var(--candy-color) 120deg),
+    /* 基础底色 */
+    var(--candy-color);
+  
+  /* 边缘锯齿状多边形：模拟糖纸被撕裂、拧紧的边缘 */
+  clip-path: polygon(
+    100% 15%, 70% 0%, 65% 20%, 25% 10%, 35% 30%, 
+    0% 45%, 30% 55%, 10% 75%, 45% 80%, 50% 100%, 100% 85%
+  );
+  
+  transform: rotate(-5deg) scaleX(-1);
+  z-index: -1;
+  /* 增加内阴影，让拧结与球体交接处产生“收紧”的深度 */
+  box-shadow: inset -10px 0 10px -5px rgba(0,0,0,0.4);
+}
+
+/* ================= 右侧：多边形撕裂拧结 ================= */
+.wf-emo--candy .wf-emo-cell::after {
+  content: '';
+  position: absolute;
+  top: 15%;
+  right: -32%;
+  width: 40%;
+  height: 70%;
+  
+  background-image: 
+    /* 镜像的放射状折痕 */
+    conic-gradient(from 270deg at 0% 50%, 
+      var(--candy-color) 0deg, rgba(0,0,0,0.15) 20deg, 
+      var(--candy-color) 40deg, rgba(255,255,255,0.6) 60deg, 
+      var(--candy-color) 80deg, rgba(0,0,0,0.15) 100deg, 
+      var(--candy-color) 120deg),
+    var(--candy-color);
+
+  /* 镜像的锯齿边缘 */
+  clip-path: polygon(
+    100% 85%, 50% 100%, 45% 80%, 10% 75%, 30% 55%, 
+    0% 45%, 35% 30%, 25% 10%, 65% 20%, 70% 0%, 100% 15%
+  );
+  
+  transform: rotate(-5deg);
+  z-index: -1;
+  box-shadow: inset 10px 0 10px -5px rgba(0,0,0,0.4);
+}
+
+/* 修改默认空状态 */
+.wf-emo--candy .wf-emo-cell--empty {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+.wf-emo--candy .wf-emo-cell--empty::before,
+.wf-emo--candy .wf-emo-cell--empty::after {
+  display: none;
+}
+
+/* 糖果角度：emoAngleIndex(date) → --a1…--a18（10°…180°），与颜色不同源 */
+.wf-emo--candy .wf-emo-cell--a1 { --wf-emo-angle: 10deg; }
+.wf-emo--candy .wf-emo-cell--a2 { --wf-emo-angle: 20deg; }
+.wf-emo--candy .wf-emo-cell--a3 { --wf-emo-angle: 30deg; }
+.wf-emo--candy .wf-emo-cell--a4 { --wf-emo-angle: 40deg; }
+.wf-emo--candy .wf-emo-cell--a5 { --wf-emo-angle: 50deg; }
+.wf-emo--candy .wf-emo-cell--a6 { --wf-emo-angle: 60deg; }
+.wf-emo--candy .wf-emo-cell--a7 { --wf-emo-angle: 70deg; }
+.wf-emo--candy .wf-emo-cell--a8 { --wf-emo-angle: 80deg; }
+.wf-emo--candy .wf-emo-cell--a9 { --wf-emo-angle: 90deg; }
+.wf-emo--candy .wf-emo-cell--a10 { --wf-emo-angle: 100deg; }
+.wf-emo--candy .wf-emo-cell--a11 { --wf-emo-angle: 110deg; }
+.wf-emo--candy .wf-emo-cell--a12 { --wf-emo-angle: 120deg; }
+.wf-emo--candy .wf-emo-cell--a13 { --wf-emo-angle: 130deg; }
+.wf-emo--candy .wf-emo-cell--a14 { --wf-emo-angle: 140deg; }
+.wf-emo--candy .wf-emo-cell--a15 { --wf-emo-angle: 150deg; }
+.wf-emo--candy .wf-emo-cell--a16 { --wf-emo-angle: 160deg; }
+.wf-emo--candy .wf-emo-cell--a17 { --wf-emo-angle: 170deg; }
+.wf-emo--candy .wf-emo-cell--a18 { --wf-emo-angle: 180deg; }
+
+/* 今日见闻：占第 8~13 行 / 列（6×6），是画布中心那一块 */
+.wf-emo-today {
+  grid-area: 8 / 8 / 14 / 14;
+  display: flex;
+  overflow: hidden;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--wf-emo-veil);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.14);
+  cursor: pointer;
+}
+
+.wf-emo-today-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.wf-emo-today-text {
+  display: -webkit-box;
+  overflow: hidden;
+  padding: 6px;
+  color: var(--wf-emo-ink);
+  font-size: 0.72em;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+/* 都无 → 淡色大字（只是提示这里能点） */
+.wf-emo-today-empty {
+  color: var(--wf-emo-faint);
+  font-size: 1.05em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+/* 今日见闻跟着主题换底（只改外观，DOM 不变）；底色一律半透明（补充契约⑨） */
+.wf-emo--weave .wf-emo-today {
+  border-radius: 3px;
+  background: color-mix(in srgb, #fbf3dc 55%, transparent);
+}
+
+.wf-emo--candy .wf-emo-today {
+  border-radius: 18px;
+  background: color-mix(in srgb, #fff7fb 55%, transparent);
+}
+
+/* 缩放百分比：固定右下角（chrome，不随平移 / 缩放移动） */
+.wf-emo-zoom {
+  position: fixed;
+  right: 18px;
+  bottom: 16px;
+  z-index: 9999;
+  padding: 4px 8px;
+  border: 1px solid var(--wf-emo-line);
+  border-radius: 999px;
+  background: var(--wf-emo-paper);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  backdrop-filter: blur(20px) saturate(1.2);
+  color: var(--wf-emo-muted);
+  font-size: 0.76em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- emo 的浮层（§D / §E）：都挂 body，层级高于弹窗 ---- */
+
+.wf-emo-close {
+  flex: 0 0 auto;
+  width: auto;
+  height: auto;
+  padding: 0 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--wf-emo-muted);
+  cursor: pointer;
+  font-size: 1.1em;
+  line-height: 1.2;
+}
+
+.wf-emo-close:hover {
+  background: var(--background-modifier-hover);
+  color: var(--wf-emo-ink);
+}
+
+/* 拍立得（Phase 19 M1 ⑥）：边框 54:86、图片 46:62 —— 324×516 / 276×372
+   上图片区、下文字区、四周白边 + 底部厚留白；头部（日期 + ×）绝对定位，不占构图比例 */
+.wf-emo-polaroid {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 10001;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: auto;
+  height: min(516px, 88vh);
+  max-width: 92vw;
+  aspect-ratio: 54 / 86;
+  padding: 28px 24px 0;
+  transform: translate(-50%, -50%);
+  border-radius: 4px;
+  background: var(--wf-emo-paper);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  backdrop-filter: blur(20px) saturate(1.2);
+  box-shadow: 0 18px 50px rgb(0 0 0 / 0.32);
+  color: var(--wf-emo-ink);
+}
+
+.wf-emo-polaroid-head {
+  position: absolute;
+  top: 4px;
+  right: 10px;
+  left: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.wf-emo-polaroid-date {
+  color: var(--wf-emo-muted);
+  font-size: 0.82em;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.06em;
+}
+
+/* 图片区：宽 46 / 高 62（在 54:86 的边框里留出左右各 4、上方 28px、下方给文字） */
+.wf-emo-polaroid-photo {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  overflow: hidden;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  aspect-ratio: 46 / 62;
+  border-radius: 2px;
+  background: var(--wf-emo-field);
+}
+
+.wf-emo-polaroid-photo--empty {
+  background: var(--background-secondary);
+}
+
+.wf-emo-polaroid-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.wf-emo-polaroid-caption {
+  position: relative;
+  flex: 1 1 auto;
+  overflow: hidden;
+  margin-top: 10px;
+  font-size: 0.86em;
+  line-height: 1.5;
+}
+
+/* 文字区截断（拍立得只负责「看一眼」，长文请去读 md） */
+.wf-emo-polaroid-text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+/* 编辑入口（Phase 19 M1 ⑥⑦）：图片区「编辑图片」、文字区「编辑文字」 */
+.wf-emo-polaroid-edit {
+  height: auto;
+  padding: 4px 10px;
+  border: 1px solid var(--wf-emo-line);
+  border-radius: 999px;
+  background: var(--wf-emo-paper);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.14);
+  color: var(--wf-emo-ink);
+  cursor: pointer;
+  font-size: 0.78em;
+}
+
+.wf-emo-polaroid-edit:hover {
+  background: var(--background-modifier-hover);
+}
+
+.wf-emo-polaroid-edit--image {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.wf-emo-polaroid-edit--text {
+  position: absolute;
+  top: 4px;
+  right: 0;
+}
+
+.wf-emo-polaroid-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+/* 编辑模式：右上角的「编辑文字」压住正文 → 给正文让出位置 */
+.wf-emo-polaroid--edit .wf-emo-polaroid-text {
+  padding-right: 72px;
+}
+
+/* 拍立得里就地改文字：文本框压到文字区高度，不撑破 54:86 构图 */
+.wf-emo-polaroid-caption .wf-emo-editor-text {
+  height: 56px;
+  min-height: 48px;
+  padding: 4px 8px;
+  font-size: 0.8em;
+  resize: none;
+}
+
+/* 输入弹窗（z-index 10002） */
+.wf-emo-editor {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 10002;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 460px;
+  max-width: 92vw;
+  padding: 14px 16px 16px;
+  transform: translate(-50%, -50%);
+  border-radius: 10px;
+  background: var(--wf-emo-paper);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  backdrop-filter: blur(20px) saturate(1.2);
+  box-shadow: 0 18px 50px rgb(0 0 0 / 0.34);
+  color: var(--wf-emo-ink);
+  font-size: 0.9em;
+}
+
+.wf-emo-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.wf-emo-editor-title {
+  font-weight: 600;
+}
+
+.wf-emo-editor-label {
+  color: var(--wf-emo-muted);
+  font-size: 0.86em;
+}
+
+.wf-emo-editor-text {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 84px;
+  padding: 8px 10px;
+  border: 1px solid var(--wf-emo-line);
+  border-radius: 8px;
+  background: var(--wf-emo-field);
+  color: var(--wf-emo-ink);
+  font-family: inherit;
+  font-size: 0.95em;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+/* 粘贴区：虚线框，选中后变实线（`--picked`） */
+.wf-emo-drop {
+  display: flex;
+  min-height: 84px;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  border: 1px dashed var(--wf-emo-line);
+  border-radius: 8px;
+  color: var(--wf-emo-muted);
+  cursor: pointer;
+  font-size: 0.86em;
+  text-align: center;
+}
+
+.wf-emo-drop--picked {
+  border-style: solid;
+  border-color: var(--interactive-accent);
+  color: var(--wf-emo-ink);
+}
+
+/* 隐藏的文件选择框（点击粘贴区时由脚本触发） */
+.wf-emo-file {
+  display: none;
+}
+
+.wf-emo-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.wf-emo-btn {
+  height: auto;
+  padding: 4px 14px;
+  border: 1px solid var(--wf-emo-line);
+  border-radius: 6px;
+  background: var(--wf-emo-field);
+  box-shadow: none;
+  color: var(--wf-emo-ink);
+  cursor: pointer;
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+
+.wf-emo-btn:hover {
+  background: var(--background-modifier-hover);
+}
+
+.wf-emo-btn--primary {
+  border-color: var(--interactive-accent);
+  background: var(--interactive-accent);
+  color: var(--text-on-accent, #ffffff);
+}
+
+.wf-emo-btn--primary:hover {
+  background: var(--interactive-accent-hover, var(--interactive-accent));
+}
+
+/* 右键菜单：一层透明背板兜住「点空白收起」，菜单本身贴着鼠标位置 */
+.wf-emo-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10003;
+}
+
+.wf-emo-menu {
+  position: fixed;
+  min-width: 120px;
+  padding: 4px;
+  border: 1px solid var(--wf-emo-line);
+  border-radius: 8px;
+  background: var(--wf-emo-paper);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  backdrop-filter: blur(20px) saturate(1.2);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.2);
+}
+
+/* 第一项：日期标签（MM-DD，不可点） */
+.wf-emo-menu-date {
+  padding: 4px 10px 6px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--wf-emo-line);
+  color: var(--wf-emo-muted);
+  font-size: 0.78em;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+}
+
+.wf-emo-menu-item {
+  display: block;
+  width: 100%;
+  height: auto;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--wf-emo-ink);
+  cursor: pointer;
+  font-size: 0.88em;
+  text-align: left;
+}
+
+.wf-emo-menu-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+/* ==========================================================================
+   Phase 19 M2 · 4 象限节点小工具
+
+   数据来自 `quadrantStats()`（只读 wfjson）：16 分区 = urgency(1-4) × importance(1-4)，
+   上 = 重要 4、右 = 紧急 4。斜俯视只用 CSS（父级 perspective + 平面 rotateX/rotateY），
+   不画 z 轴、不引 3D 库；描边是内侧描边（outline-offset 负值），空分区虚线，
+   填充 = 象限色 5 档（`--wf-quad-a1/a2` 由 `--f1` … `--f5` 递增）。
+   象限色写死（红 / 橙 / 绿 / 蓝），不进 `[data-wf-theme]`：它表达的是语义而不是主题。
+   ========================================================================== */
+
+.wf-quad {
+  display: flex;
+  align-items: stretch;
+  gap: 18px;
+  min-height: 0;
+}
+
+/* 斜俯视的「摄像机」：透视只给父级，平面自己只转 x/y（契约：不画 z 轴） */
+.wf-quad-stage {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  /* 补充契约⑤a：四周留 40 / 44 的呼吸空间；`overflow: visible` 让转过的平面不被裁 */
+  width: 502px;
+  min-height: 470px;
+  padding: 40px 44px;
+  overflow: visible;
+  perspective: 1200px;
+}
+
+.wf-quad-plane {
+  position: relative;
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: repeat(4, 96px);
+  grid-template-rows: repeat(4, 96px);
+  gap: 10px;
+  /* 补充契约⑤c：上沿 + 右沿朝镜头 → 右上（重要 4 · 紧急 4）最近最大，左下最远最小 */
+  transform: rotateX(-56deg) rotateY(-22deg);
+  transform-style: preserve-3d;
+}
+
+/* 平面内交叉的长短轴（补充契约⑤b）：x 向右单箭头（紧急 4 侧）、y 向上单箭头（重要 4 侧）
+   —— 纯装饰：`pointer-events: none`，不挡分区点选；箭头由 `::after` 画，DOM 里只有两个空 div */
+.wf-quad-axis-line {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.wf-quad-axis-line--x {
+  top: 50%;
+  right: -26px;
+  left: -26px;
+  border-top: 1px solid rgb(120 120 120 / 0.55);
+}
+
+.wf-quad-axis-line--x::after {
+  position: absolute;
+  top: -4px;
+  right: 0;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 7px solid rgb(120 120 120 / 0.7);
+  content: "";
+}
+
+.wf-quad-axis-line--y {
+  top: -26px;
+  bottom: -26px;
+  left: 50%;
+  border-left: 1px solid rgb(120 120 120 / 0.55);
+}
+
+.wf-quad-axis-line--y::after {
+  position: absolute;
+  top: 0;
+  left: -4px;
+  width: 0;
+  height: 0;
+  border-right: 4px solid transparent;
+  border-bottom: 7px solid rgb(120 120 120 / 0.7);
+  border-left: 4px solid transparent;
+  content: "";
+}
+
+.wf-quad-partition {
+  /* 缺省灰（正常不会用到：每个格子都会带一个 --<color> 类） */
+  --wf-quad-rgb: 140 140 140;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  border: none;
+  border-radius: 12px;
+  background: linear-gradient(
+    135deg,
+    rgb(var(--wf-quad-rgb) / var(--wf-quad-a1, 0)),
+    rgb(var(--wf-quad-rgb) / var(--wf-quad-a2, 0))
+  );
+  color: rgb(var(--wf-quad-rgb));
+  cursor: pointer;
+  /* 内侧描边：负 offset 让描边画在圆角里面，相邻分区之间才有分割感 */
+  outline: 2px solid rgb(var(--wf-quad-rgb) / 0.9);
+  outline-offset: -2px;
+  transition: outline-width 120ms ease, transform 120ms ease;
+}
+
+.wf-quad-partition:hover {
+  outline-width: 3px;
+}
+
+.wf-quad-partition--selected {
+  outline-width: 3px;
+  transform: translateZ(16px);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.22);
+}
+
+/* 空分区：虚线描边 + 不填色（填充档位类不会挂上来） */
+.wf-quad-partition--empty {
+  outline-style: dashed;
+  outline-color: rgb(var(--wf-quad-rgb) / 0.55);
+}
+
+/* 象限主题色（契约表：重要且紧急=红 / 重要不紧急=橙 / 都不=绿 / 不重要但紧急=蓝） */
+.wf-quad-partition--red {
+  --wf-quad-rgb: 220 68 68;
+}
+
+.wf-quad-partition--orange {
+  --wf-quad-rgb: 232 146 42;
+}
+
+.wf-quad-partition--green {
+  --wf-quad-rgb: 58 168 98;
+}
+
+.wf-quad-partition--blue {
+  --wf-quad-rgb: 58 128 214;
+}
+
+/* 填充 5 档等差（1~4 个任务各一档，5 个及以上都在 f5） */
+.wf-quad-partition--f1 {
+  --wf-quad-a1: 0.1;
+  --wf-quad-a2: 0.18;
+}
+
+.wf-quad-partition--f2 {
+  --wf-quad-a1: 0.18;
+  --wf-quad-a2: 0.3;
+}
+
+.wf-quad-partition--f3 {
+  --wf-quad-a1: 0.26;
+  --wf-quad-a2: 0.42;
+}
+
+.wf-quad-partition--f4 {
+  --wf-quad-a1: 0.34;
+  --wf-quad-a2: 0.54;
+}
+
+.wf-quad-partition--f5 {
+  --wf-quad-a1: 0.42;
+  --wf-quad-a2: 0.66;
+}
+
+.wf-quad-count {
+  font-size: 1em;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 坐标轴说明（放在平面外面：平面转了之后文字会跟着斜） */
+.wf-quad-axis {
+  position: absolute;
+  color: var(--text-faint);
+  font-size: 0.72em;
+  letter-spacing: 0.12em;
+}
+
+.wf-quad-axis--y {
+  top: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.wf-quad-axis--x {
+  right: 8px;
+  bottom: 4px;
+}
+
+/* 右侧预览：初始一行提示；选中后按 startAt 正序列出节点 */
+.wf-quad-preview {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  max-height: 64vh;
+  padding-left: 16px;
+  border-left: 1px dashed var(--wf-panel-border);
+  overflow: auto;
+}
+
+.wf-quad-preview-title {
+  flex: 0 0 auto;
+  margin-bottom: 4px;
+  color: var(--text-muted);
+  font-size: 0.8em;
+  letter-spacing: 0.04em;
+}
+
+.wf-quad-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.wf-quad-empty {
+  padding: 18px 4px;
+  color: var(--text-faint);
+  font-size: 0.86em;
+  text-align: center;
+}
+
+.wf-quad-node {
+  padding: 9px 2px;
+  border-bottom: 1px solid var(--wf-panel-border);
+}
+
+.wf-quad-node:last-child {
+  border-bottom: none;
+}
+
+.wf-quad-node-title {
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+
+.wf-quad-node-workflow,
+.wf-quad-node-time {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 0.82em;
+}
+
+.wf-quad-node-time {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 窄屏（小窗口 / 侧边打开的弹窗）：图在上、预览在下 */
+@media (max-width: 760px) {
+  .wf-quad {
+    flex-direction: column;
+  }
+
+  .wf-quad-stage {
+    width: auto;
+    min-height: 0;
+  }
+
+  .wf-quad-preview {
+    max-height: none;
+    padding: 10px 0 0;
+    border-top: 1px dashed var(--wf-panel-border);
+    border-left: none;
+  }
+}
+
+
+/* ==========================================================================
+   Phase 19 M3 · 365 天 plot 小工具
+
+   数据是**独立 JSON**（`plotFolder/plot-<uuid>.json`），与 wfjson 无关；
+   折线用 SVG 画（坐标在 `views/plotWidget.ts` 用引擎的 `computeScale` + `projectValue`
+   算好），这里只管外观：列表 / 工具条 / 图表框 / 点表 / 新建表单。
+   颜色走 `--interactive-accent` 系 token（跟随插件主题），不写死。
+   ========================================================================== */
+
+/* 三栏（补充契约⑥b）：左列表 | 中折线 | 右数据点；窄于 1100px 时数据点折到图表下方 */
+.wf-plot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 18px;
+  min-height: 0;
+}
+
+/* 左侧：工具条 + plot 列表 */
+.wf-plot-sidebar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 8px;
+  width: 220px;
+  padding-right: 14px;
+  border-right: 1px dashed var(--wf-panel-border);
+}
+
+.wf-plot-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wf-plot-btn {
+  height: auto;
+  padding: 4px 10px;
+  border: 1px solid var(--wf-panel-border);
+  border-radius: var(--wf-radius-btn, 6px);
+  background: var(--background-secondary);
+  box-shadow: none;
+  color: var(--text-normal);
+  cursor: pointer;
+  font-size: 0.85em;
+  line-height: 1.4;
+}
+
+.wf-plot-btn:hover {
+  background: var(--background-modifier-hover);
+}
+
+.wf-plot-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.wf-plot-btn--primary {
+  border-color: var(--interactive-accent);
+  background: var(--interactive-accent);
+  color: var(--text-on-accent, #ffffff);
+}
+
+.wf-plot-btn--primary:hover {
+  background: var(--interactive-accent-hover, var(--interactive-accent));
+}
+
+.wf-plot-btn--danger {
+  border-color: rgb(220 68 68 / 0.55);
+  color: rgb(200 52 52);
+}
+
+.wf-plot-btn--danger.wf-plot-btn--armed {
+  border-color: rgb(220 68 68);
+  background: rgb(220 68 68);
+  color: #ffffff;
+}
+
+/* 隐藏的文件选择框（点「导入 CSV」时由它弹系统框） */
+.wf-plot-file {
+  display: none;
+}
+
+.wf-plot-list-title {
+  color: var(--text-faint);
+  font-size: 0.72em;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.wf-plot-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  max-height: 60vh;
+  overflow: auto;
+}
+
+.wf-plot-item {
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--wf-radius-btn, 6px);
+  cursor: pointer;
+}
+
+.wf-plot-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.wf-plot-item--active {
+  border-color: var(--interactive-accent);
+  background: rgb(47 127 208 / 0.12);
+}
+
+.wf-plot-item-name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wf-plot-item-meta {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 0.78em;
+}
+
+/* 中栏：标题 / 折线 */
+.wf-plot-main {
+  display: flex;
+  flex: 1 1 340px;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 280px;
+  max-height: 64vh;
+  overflow: auto;
+}
+
+.wf-plot-placeholder {
+  padding: 40px 0;
+  color: var(--text-faint);
+  font-size: 0.9em;
+  text-align: center;
+}
+
+.wf-plot-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.wf-plot-title {
+  font-weight: 600;
+}
+
+.wf-plot-meta {
+  color: var(--text-muted);
+  font-size: 0.8em;
+}
+
+.wf-plot-chart {
+  position: relative;
+  padding: 6px;
+  border: 1px solid var(--wf-panel-border);
+  border-radius: var(--wf-radius-card, 10px);
+  background: var(--background-primary);
+}
+
+.wf-plot-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.wf-plot-grid {
+  stroke: rgb(127 127 127 / 0.18);
+  stroke-width: 1;
+}
+
+.wf-plot-axis-line {
+  stroke: rgb(127 127 127 / 0.45);
+  stroke-width: 1;
+}
+
+.wf-plot-line {
+  fill: none;
+  stroke: var(--interactive-accent);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.wf-plot-dot {
+  fill: var(--interactive-accent);
+  stroke: var(--background-primary);
+  stroke-width: 1;
+}
+
+.wf-plot-tick {
+  fill: var(--text-faint);
+  font-size: 10px;
+}
+
+/* 第三栏：搜索 + 点表 + 添加行（补充契约⑥b —— `.wf-plot` 的直接子元素，自带左侧虚线分隔） */
+.wf-plot-points {
+  display: flex;
+  flex: 0 0 250px;
+  flex-direction: column;
+  gap: 6px;
+  box-sizing: border-box;
+  min-width: 0;
+  max-height: 64vh;
+  padding-left: 14px;
+  border-left: 1px dashed var(--wf-panel-border);
+  overflow: auto;
+}
+
+/* 点搜索：输入框 + 「搜索 / 清空」+ 命中数（补充契约⑥c） */
+.wf-plot-search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.wf-plot-search-input {
+  flex: 1 1 120px;
+  min-width: 0;
+}
+
+.wf-plot-search-info {
+  width: 100%;
+  color: var(--text-faint);
+  font-size: 0.72em;
+}
+
+.wf-plot-points-title {
+  color: var(--text-faint);
+  font-size: 0.72em;
+  letter-spacing: 0.12em;
+}
+
+.wf-plot-points-rows {
+  max-height: 180px;
+  overflow: auto;
+}
+
+.wf-plot-point {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 2px;
+  border-bottom: 1px solid var(--wf-panel-border);
+  font-variant-numeric: tabular-nums;
+}
+
+.wf-plot-point:last-child {
+  border-bottom: none;
+}
+
+.wf-plot-point-x {
+  flex: 0 0 auto;
+  min-width: 90px;
+  color: var(--text-muted);
+}
+
+.wf-plot-point-y {
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+}
+
+.wf-plot-point-remove {
+  flex: 0 0 auto;
+  height: auto;
+  padding: 0 6px;
+  border: none;
+  background: none;
+  box-shadow: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 1em;
+  line-height: 1.2;
+}
+
+.wf-plot-point-remove:hover {
+  color: rgb(200 52 52);
+}
+
+.wf-plot-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.wf-plot-input {
+  padding: 4px 8px;
+  border: 1px solid var(--wf-panel-border);
+  border-radius: var(--wf-radius-btn, 6px);
+  background: var(--background-modifier-form-field, var(--background-primary));
+  color: var(--text-normal);
+  font-size: 0.85em;
+}
+
+.wf-plot-input--x {
+  width: 120px;
+}
+
+.wf-plot-input--y {
+  width: 90px;
+}
+
+/* 新建表单 */
+.wf-plot-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 380px;
+}
+
+.wf-plot-form-title {
+  font-weight: 600;
+}
+
+.wf-plot-form-label {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 0.78em;
+}
+
+.wf-plot-form-hint {
+  color: var(--text-faint);
+  font-size: 0.75em;
+}
+
+.wf-plot-kinds {
+  display: flex;
+  gap: 6px;
+}
+
+.wf-plot-kind {
+  height: auto;
+  padding: 3px 12px;
+  border: 1px solid var(--wf-panel-border);
+  border-radius: var(--wf-radius-btn, 6px);
+  background: var(--background-secondary);
+  box-shadow: none;
+  color: var(--text-normal);
+  cursor: pointer;
+  font-size: 0.85em;
+}
+
+.wf-plot-kind--active {
+  border-color: var(--interactive-accent);
+  background: var(--interactive-accent);
+  color: var(--text-on-accent, #ffffff);
+}
+
+.wf-plot-form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.wf-plot-empty {
+  padding: 14px 6px;
+  color: var(--text-faint);
+  font-size: 0.84em;
+  text-align: center;
+}
+
+/* 中窄屏（补充契约⑥b）：数据点折到图表下方，占满整行 */
+@media (max-width: 1100px) {
+  .wf-plot-points {
+    flex: 1 1 100%;
+    max-height: none;
+    padding: 12px 0 0;
+    border-top: 1px dashed var(--wf-panel-border);
+    border-left: none;
+  }
+}
+
+/* 窄屏（小窗口 / 侧边打开的弹窗）：列表在上、折线在下 */
+@media (max-width: 760px) {
+  .wf-plot {
+    flex-direction: column;
+  }
+
+  .wf-plot-sidebar {
+    width: auto;
+    padding: 0 0 10px;
+    border-bottom: 1px dashed var(--wf-panel-border);
+    border-right: none;
+  }
+
+  .wf-plot-list {
+    max-height: 160px;
+  }
+
+  .wf-plot-main,
+  .wf-plot-points {
+    max-height: none;
+  }
+}
+
+
