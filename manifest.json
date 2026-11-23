@@ -1,9 +1,9 @@
 {
 	"id": "workflow-watcher",
 	"name": "Workflow Watcher",
-	"version": "0.1.0",
+	"version": "1.0.0",
 	"minAppVersion": "1.6.6",
-	"description": "An Obsidian plugin for organizing documents based on workflows.一款 obsidian 插件，基于工作流整理文档。",
+	"description": "Workflow-based Obsidian file dashboard;Workflow is flexible to modify, suitable for exploratory tasks;Focus on data statistics and review, with positive timer available;Plot date-data line chart;基于工作流的obsidian文件看板;工作流修改灵活，适合探索性任务;重视数据统计与复盘，开启正计时器;绘制日期-数据折线图",
 	"author": "ikiwi",
 	"isDesktopOnly": false
 }
