@@ -21,11 +21,11 @@ const NOW = new Date("2026-10-11T10:30:00+08:00");
 const AT = "2026-10-11T10:30:00+08:00";
 
 describe("factory · createNode", () => {
-  test("缺省值：id/锚点/状态/进度/子节点/时间", () => {
+  test("缺省值：id/状态/进度/子节点/时间（Phase 27 起不再生成 noteAnchor）", () => {
     const node = createNode("写方案", NOW);
     assert.ok(ID_PATTERN.test(node.id));
     assert.ok(node.id.startsWith("nd-"));
-    assert.equal(node.noteAnchor, anchorForNode(node.id));
+    assert.equal("noteAnchor" in node, false, "Phase 27：纪要段已弃用，不再自动生成 noteAnchor");
     assert.equal(node.title, "写方案");
     assert.equal(node.status, "todo");
     // v1.6：progress / progress_max 与 status 解耦，缺省 0 / 1
@@ -58,7 +58,7 @@ describe("factory · createNode", () => {
     const tags = ["竞品"];
     const node = createNode({ title: "t", id: "nd-uuid-900", tags, importance: 4, estimate: 3 }, NOW);
     assert.equal(node.id, "nd-uuid-900");
-    assert.equal(node.noteAnchor, "^nd-uuid-900");
+    assert.equal("noteAnchor" in node, false, "Phase 27：不再自动生成 noteAnchor");
     assert.equal(node.importance, 4);
     assert.equal(node.estimate, 3);
     assert.deepEqual(node.tags, tags);
@@ -68,7 +68,7 @@ describe("factory · createNode", () => {
     assert.equal("dueAt" in node, false);
   });
 
-  test("noteAnchor 可显式覆盖（导入既有数据时）", () => {
+  test("noteAnchor 只在显式传入时照写（兼容旧数据 / 旧调用方）", () => {
     const node = createNode({ title: "t", id: "nd-uuid-901", noteAnchor: "^nd-uuid-902" }, NOW);
     assert.equal(node.noteAnchor, "^nd-uuid-902");
   });

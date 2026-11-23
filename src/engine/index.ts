@@ -15,6 +15,8 @@
  *   analyze / mutate                 —— 编排入口（parse → schema → consistency；变更 → 写回 → 幂等校验）
  *   nodeEdits / nodeReorder / timerEdits / workflowEdits —— 变更的内存改动（Phase 2 节点编辑 /
  *     Phase 15 拖拽改节点顺序 / Phase 3 计时三动作 / Phase 5 工作流增删改）
+ *   unclassified                     —— 「未分类」伪工作流（Phase 27：容器 + 新建 / 搬入）
+ *   linkAffiliation                  —— 反向 YAML 资料归属（Phase 27：四键解析 + 反向索引）
  *
  * 用法：
  *   import { analyzeMarkdown, formatAnalyzeResult, upsertWfJsonBlock } from "./engine/index.ts";
@@ -40,13 +42,17 @@ export * from "./wfjsonWrite.ts";
 export * from "./analyze.ts";
 export * from "./mutate.ts";
 export * from "./sidecar.ts";
+export * from "./mainBoard.ts";
 export * from "./nodeEdits.ts";
 export * from "./nodeReorder.ts";
+export * from "./unclassified.ts";
+export * from "./linkAffiliation.ts";
 export * from "./timerEdits.ts";
 export * from "./workflowEdits.ts";
 export * from "./archive.ts";
 export * from "./template.ts";
-export * from "./spiral.ts";
+export * from "./importExport.ts";
 export * from "./quadrant.ts";
 export * from "./plot.ts";
+export * from "./records.ts";
 export * from "./i18n.ts";

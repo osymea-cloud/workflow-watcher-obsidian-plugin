@@ -22,7 +22,7 @@
  */
 
 import { parseFrontmatter, type FrontmatterInfo } from "./frontmatter.ts";
-import { issueMsg } from "./i18n.ts";
+import { LANGS, issueMsg, tIn } from "./i18n.ts";
 import { anchorForNode, anchorToTarget } from "./ids.ts";
 import { findBlockAnchors, findCodeFences, splitLines } from "./markdownScan.ts";
 import { IMAGE_EXTENSIONS, type LinkType, type WfJsonDocument, type WfLink, type WfNode } from "./types.ts";
@@ -34,8 +34,27 @@ import { IMAGE_EXTENSIONS, type LinkType, type WfJsonDocument, type WfLink, type
 /** 纪要段落默认标题层级（形如 `### 标题 ^nd-xxx`） */
 export const NOTE_HEADING_LEVEL = 3;
 
-/** 新建节点时写入正文的占位文本 */
-export const NOTE_PLACEHOLDER = "（纪要待补充）";
+/**
+ * 新建节点时写入正文的占位文本（中文写法）。
+ *
+ * 取自字典 `template.notePlaceholder` 的 zh 值 —— 模板命令写进去的占位符与引擎判断的
+ * 占位符必须是同一串文字，集中在一处才不会漂移。
+ */
+export const NOTE_PLACEHOLDER: string = tIn("zh", "template.notePlaceholder");
+
+/**
+ * 占位符的**全部语言写法**（zh / en）。
+ *
+ * 判断「这段正文只是占位符」不能只看当前语言：中文环境下插入的模板（或建出的节点），
+ * 用户切到英文后那段文字仍然是占位符，若只认当前语言就会被当成真实内容（归档会复制它、
+ * 追加超链接时也不会先丢掉它）。
+ */
+const NOTE_PLACEHOLDERS: readonly string[] = LANGS.map((lang) => tIn(lang, "template.notePlaceholder"));
+
+/** 这段文字是否只是一句占位符（中英两种写法都算；空串不算） */
+export function isNotePlaceholder(text: string): boolean {
+  return NOTE_PLACEHOLDERS.includes(text.trim());
+}
 
 /** 开始 / 结束标志的前缀（导出给上层做提示文案与测试断言） */
 export const NOTE_BEGIN_PREFIX = "<!-- wf-note:begin:";
@@ -432,8 +451,8 @@ export function appendNoteSectionLines(
   const newline = newlineOf(markdown);
   const lines = splitLines(markdown).map((line) => line.text);
   const existing = section.content.length > 0 ? section.content.split("\n") : [];
-  // 占位文本不算内容：追加前先丢掉「（纪要待补充）」
-  const kept = existing.filter((line) => line.trim().length > 0 && line.trim() !== NOTE_PLACEHOLDER);
+  // 占位文本不算内容：追加前先丢掉占位符（中英两种写法都丢）
+  const kept = existing.filter((line) => line.trim().length > 0 && !isNotePlaceholder(line));
   const body = [...kept, ...cleaned];
   const before = lines.slice(0, section.beginLine);
   const after = lines.slice(section.endLine - 1);
@@ -615,7 +634,7 @@ export function collectNoteSectionContents(
   const clean = (content: string): string => content.replace(/\r\n/g, "\n").replace(/\n+$/, "");
   const usable = (content: string): boolean => {
     const text = content.trim();
-    return text.length > 0 && text !== NOTE_PLACEHOLDER;
+    return text.length > 0 && !isNotePlaceholder(text);
   };
 
   for (const section of findNoteSections(markdown, frontmatter)) {

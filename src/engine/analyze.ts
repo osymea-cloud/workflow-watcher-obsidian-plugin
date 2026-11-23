@@ -5,7 +5,10 @@
  *  1. 没有 wfjson 代码块 → 只报 NO_WFJSON_BLOCK（info），found=false；
  *  2. JSON 语法不合法 → 只报语法类问题，不做 Schema / 一致性检查；
  *  3. Schema 校验有 error → 报出字段级问题，跳过一致性检查（结构未定型，查一致性会误导）；
- *  4. 结构合法 → 再做一致性检查（noteAnchor ↔ 正文、id、状态、links、relations、frontmatter）。
+ *  4. 结构合法 → 再做一致性检查（id、状态、relations、frontmatter 等）。
+ *
+ * Phase 27 M3：正文「纪要段」范式已弃用 —— `AnalyzeResult` 不再产出 `noteLinks` / `noteSections`，
+ * 资料文件改由反向 YAML 归属定位（`linkAffiliation.ts`）。
  */
 
 import { issueMsg, t } from "./i18n.ts";
@@ -23,7 +26,6 @@ import { validateAgainstSchema, type JsonSchemaObject } from "./schemaValidator.
 import { parseWfJsonBlock, parseWfJsonText, type WfJsonParseResult } from "./wfjsonParse.ts";
 import { parseFrontmatter, type FrontmatterInfo } from "./frontmatter.ts";
 import { findBlockAnchors, findWfJsonBlocks, indexBlockAnchors } from "./markdownScan.ts";
-import { collectNoteLinks, findNoteSections, type NoteSection, type ParsedNoteLink } from "./noteSection.ts";
 import { checkConsistency } from "./consistency.ts";
 import { upgradeDocument } from "./upgrade.ts";
 
@@ -36,7 +38,7 @@ export interface AnalyzeOptions {
   reportMissing?: boolean;
 }
 
-/** JSON 来源（v0.7 §⑧）：笔记内代码块 or 外置 `_wfjson/…/*.wf.json` */
+/** JSON 来源（v0.7 §⑧）：笔记内代码块 or 外置 `_workflowwatcher/…/*.wf.json` */
 export type WfJsonSource = "note" | "sidecar";
 
 /**
@@ -44,7 +46,7 @@ export type WfJsonSource = "note" | "sidecar";
  *
  * 两种模式：
  *  - 笔记模式（默认）：JSON 从 `noteMarkdown` 里的 wfjson 代码块抽取（旧行为，完全兼容）；
- *  - 侧车模式：显式传入 `jsonText`（`_wfjson/` 下的外置 JSON），笔记内代码块**不参与解析**，
+ *  - 侧车模式：显式传入 `jsonText`（`_workflowwatcher/` 下的外置 JSON），笔记内代码块**不参与解析**，
  *    正文锚点 / 纪要段 / frontmatter 仍从笔记读。`file` 保持笔记路径，`jsonFile` 记侧车路径。
  */
 export interface AnalyzeDocumentInput extends AnalyzeOptions {
@@ -56,11 +58,16 @@ export interface AnalyzeDocumentInput extends AnalyzeOptions {
   jsonSource?: WfJsonSource;
   /** 外置 JSON 文件路径（仅用于展示与提示） */
   jsonFile?: string;
+  /**
+   * 是否检查 frontmatter 摘要字段（默认 true）。
+   * 纯 `.wf.json` 文件（Phase 28 归档看板）没有笔记 / frontmatter → 传 false。
+   */
+  checkFrontmatter?: boolean;
 }
 
 export interface AnalyzeResult {
   file?: string;
-  /** JSON 来源（v0.7 §⑧）：`note` = 笔记内代码块；`sidecar` = `_wfjson/…/*.wf.json` */
+  /** JSON 来源（v0.7 §⑧）：`note` = 笔记内代码块；`sidecar` = `_workflowwatcher/…/*.wf.json` */
   jsonSource?: WfJsonSource;
   /** 外置 JSON 文件路径（侧车模式下有；`file` 始终是笔记路径） */
   jsonFile?: string;
@@ -81,13 +88,6 @@ export interface AnalyzeResult {
   schema: JsonSchemaObject;
   /** frontmatter 解析结果（v1.6：视图从这里读 `wf-theme` 偏好） */
   frontmatter: FrontmatterInfo;
-  /**
-   * 每个节点的正文超链接（Phase 9：`links[]` 的唯一替代）。
-   * 成对标志段优先，旧格式（标题边界）段落兜底；nodeId → 链接列表。
-   */
-  noteLinks: Map<string, ParsedNoteLink[]>;
-  /** 正文里成对的纪要段（Phase 9；旧文件没有标志时是空数组） */
-  noteSections: NoteSection[];
   /** 代码块内 JSON 的行号基准（内容第 1 行的文件行号） */
   lineBase: number;
   issues: WfIssue[];
@@ -196,8 +196,6 @@ export function analyzeDocument(input: AnalyzeDocumentInput): AnalyzeResult {
     schema: WFJSON_SCHEMA,
     frontmatter,
     lineBase: parse.lineBase,
-    noteLinks: new Map(),
-    noteSections: [],
     issues,
     counts: countIssues(issues),
     hasError: false,
@@ -225,12 +223,17 @@ export function analyzeDocument(input: AnalyzeDocumentInput): AnalyzeResult {
 
   if (input.consistency !== false) {
     const anchors = indexBlockAnchors(findBlockAnchors(markdown, frontmatter));
-    issues.push(...checkConsistency({ markdown, frontmatter, document, anchors }));
+    issues.push(
+      ...checkConsistency({
+        markdown,
+        frontmatter,
+        document,
+        anchors,
+        checkFrontmatter: input.checkFrontmatter !== false,
+      }),
+    );
   }
 
-  // Phase 9：正文超链接（links[] 的唯一替代）+ 成对纪要段
-  result.noteSections = findNoteSections(markdown, frontmatter);
-  result.noteLinks = collectNoteLinks(markdown, document, frontmatter);
   return finalize(result);
 }
 

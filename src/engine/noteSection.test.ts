@@ -18,11 +18,13 @@ import {
   findNoteSections,
   getNoteSectionContent,
   inferNoteLinkType,
+  isNotePlaceholder,
   renderNoteLinkLine,
   renderNoteSection,
   replaceNoteSectionContent,
   wrapNoteSections,
 } from "./noteSection.ts";
+import { setLang, tIn } from "./i18n.ts";
 import { anchorForNode } from "./ids.ts";
 import type { WfJsonDocument, WfNode } from "./types.ts";
 
@@ -418,6 +420,46 @@ describe("noteSection · 正文内容汇总（collectNoteSectionContents）", ()
     ].join("\n");
 
     assert.equal(collectNoteSectionContents(markdown, document).has("nd-001"), false);
+  });
+});
+
+describe("noteSection · 占位符与语言（Phase 20）", () => {
+  test("NOTE_PLACEHOLDER 就是字典里的中文写法（模板与引擎不会漂移）", () => {
+    assert.equal(NOTE_PLACEHOLDER, tIn("zh", "template.notePlaceholder"));
+    assert.equal(NOTE_PLACEHOLDER, "（纪要待补充）");
+    assert.equal(tIn("en", "template.notePlaceholder"), "(Notes pending)");
+  });
+
+  test("isNotePlaceholder：中英两种写法都算，与当前语言无关", () => {
+    setLang("zh");
+    assert.equal(isNotePlaceholder(NOTE_PLACEHOLDER), true);
+    assert.equal(isNotePlaceholder("  (Notes pending)  "), true, "英文模板写的占位符也算");
+    assert.equal(isNotePlaceholder("真的纪要"), false);
+    assert.equal(isNotePlaceholder(""), false, "空串没内容，但不是占位符");
+
+    // 中文环境写下的占位符，切到英文后仍然只是占位符（反之亦然）
+    setLang("en");
+    assert.equal(isNotePlaceholder(NOTE_PLACEHOLDER), true);
+    assert.equal(isNotePlaceholder(tIn("en", "template.notePlaceholder")), true);
+    setLang("zh");
+  });
+
+  test("英文占位符：不参与归档复制，追加超链接时先被丢掉", () => {
+    const english = tIn("en", "template.notePlaceholder");
+    const document = documentOf(node("nd-001", "Title"));
+    const markdown = [
+      "## Title ^nd-001",
+      "<!-- wf-note:begin:nd-001 -->",
+      english,
+      "<!-- wf-note:end:nd-001 -->",
+      "",
+    ].join("\n");
+
+    assert.equal(collectNoteSectionContents(markdown, document).has("nd-001"), false);
+
+    const appended = appendNoteSectionLines(markdown, "nd-001", ["- [[A]]"]);
+    assert.equal(appended.markdown.includes(english), false);
+    assert.ok(appended.markdown.includes("- [[A]]"));
   });
 });
 

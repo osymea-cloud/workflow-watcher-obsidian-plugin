@@ -100,10 +100,10 @@ function plotJson(overrides: Partial<PlotDocument> = {}): string {
 const PLOT_ID = "plot-00000000-0000-4000-8000-000000000001";
 const PLOT_PATH = `plots/${PLOT_ID}.json`;
 
-/** 等几轮微任务（`load()` 里逐个 await 读盘） */
+/** 等几轮宏任务（`load()` 里并行读盘 + 后续 `paint()` 落地） */
 async function settle(): Promise<void> {
   for (let index = 0; index < 4; index += 1) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
   }
 }
 
@@ -257,14 +257,14 @@ describe("plotWidget · 新建 plot", () => {
 
     button(root, "新建").onclick?.(clickEvent());
     assert.equal(root.query(".wf-plot-form").length, 1);
-    assert.equal(root.query(".wf-plot-form-hint")[0].text, "x = YYYY-MM-DD");
+    assert.equal(root.query(".wf-plot-form-hint")[0].text, "日期，如 2026-01-01");
     assert.equal(root.query(".wf-plot-placeholder").length, 0, "表单顶掉了空提示");
 
     const sequence = root.query(".wf-plot-kind").find((item) => item.text === "序号");
     assert.ok(sequence, "应有「序号」选项");
     sequence.onclick?.(clickEvent());
     assert.ok(root.query(".wf-plot-kind")[1].classList.contains("wf-plot-kind--active"), "切换后高亮跟着走");
-    assert.equal(root.query(".wf-plot-form-hint")[0].text, "x = 1, 2, 3…");
+    assert.equal(root.query(".wf-plot-form-hint")[0].text, "序号，如 1、2、3");
 
     const inputs = root.query(".wf-plot-input");
     assert.equal(inputs.length, 2, "名称 + 单位");
@@ -361,11 +361,11 @@ describe("plotWidget · 增删点", () => {
     const before = recorder.files.get(PLOT_PATH)?.text;
 
     await addPoint(root, "2026-02-30", "70");
-    assert.deepEqual(recorder.notices, ["x 不合法：x = YYYY-MM-DD"]);
+    assert.deepEqual(recorder.notices, ["x 不合法：日期，如 2026-01-01"]);
     assert.equal(recorder.files.get(PLOT_PATH)?.text, before, "坏 x 不写盘");
 
     await addPoint(root, "2026-01-05", "abc");
-    assert.deepEqual(recorder.notices, ["x 不合法：x = YYYY-MM-DD", "y 必须是数字"]);
+    assert.deepEqual(recorder.notices, ["x 不合法：日期，如 2026-01-01", "y 必须是数字"]);
     assert.equal(recorder.files.get(PLOT_PATH)?.text, before, "坏 y 不写盘");
   });
 
@@ -594,7 +594,7 @@ describe("plotWidget · 点搜索 / date 预填（补充契约⑥c ⑥d）", () 
     assert.deepEqual(xs(root), ["2026-01-01", "2026-01-02"]);
 
     searchFor(root, "2026-02-30");
-    assert.deepEqual(recorder.notices, ["搜索格式不对：x = YYYY-MM-DD"]);
+    assert.deepEqual(recorder.notices, ["搜索格式不对：日期，如 2026-01-01"]);
     assert.deepEqual(xs(root), ["2026-01-01", "2026-01-02"], "结果不变");
     assert.equal(root.query(".wf-plot-search-info")[0].text, "匹配 2 / 共 3 条");
   });
@@ -635,7 +635,7 @@ describe("plotWidget · 点搜索 / date 预填（补充契约⑥c ⑥d）", () 
     );
     assert.equal(
       second.root.query(".wf-plot-input--x")[0].getAttribute("placeholder"),
-      "x = 1, 2, 3…",
+      "序号，如 1、2、3",
       "占位符仍是格式提示",
     );
   });

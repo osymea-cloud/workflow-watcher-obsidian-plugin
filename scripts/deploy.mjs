@@ -40,6 +40,19 @@ const targets = vaults.length > 0 ? vaults : DEFAULT_VAULTS;
 const FILES = ["main.js", "manifest.json", "styles.css"];
 
 /**
+ * 解析库目录：先在仓库根下找（`testvault` → `<repo>/testvault`），找不到再在**仓库的上一级**找
+ * （本仓库的库就放在 `../testvault`）—— 否则 `npm run deploy` 的默认值永远「找不到目录」，
+ * 测试库会一直跑旧产物（id / 代码都对不上）。
+ * 传绝对路径时 `resolve` 原样返回，行为不变。
+ */
+function resolveVaultDir(vault) {
+  const direct = resolve(root, vault);
+  if (existsSync(direct)) return direct;
+  const sibling = resolve(root, "..", vault);
+  return existsSync(sibling) ? sibling : direct;
+}
+
+/**
  * 把插件 id 写进 `<vault>/.obsidian/community-plugins.json`（Obsidian 的「已启用社区插件」清单）。
  *
  * 保留清单里已有的条目与顺序，只追加缺的那一个（重复执行是空操作）；
@@ -78,9 +91,9 @@ function enablePlugin(vault, vaultDir) {
 let failed = false;
 
 for (const vault of targets) {
-  const vaultDir = resolve(root, vault);
+  const vaultDir = resolveVaultDir(vault);
   if (!existsSync(vaultDir)) {
-    console.error(`跳过 ${vault}：找不到目录 ${vaultDir}`);
+    console.error(`跳过 ${vault}：找不到目录 ${vaultDir}（也试过 ${resolve(root, "..", vault)}）`);
     failed = true;
     continue;
   }

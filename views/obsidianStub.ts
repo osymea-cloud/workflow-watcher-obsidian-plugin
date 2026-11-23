@@ -21,6 +21,8 @@ const ICON_GLYPH: Record<string, string> = {
   package: "📦",
   "line-chart": "📈",
   settings: "⚙️",
+  download: "📥",
+  "list-checks": "🗒",
 };
 
 /** Obsidian 的 `setIcon(element, iconId)`：把图标画进元素里 */

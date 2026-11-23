@@ -20,9 +20,10 @@
  */
 
 import { isIsoDateOrDateTime } from "./time.ts";
+import { WFJSON_FOLDER } from "./types.ts";
 
-/** plot 的默认目录（插件设置 `plotFolder` 的缺省值） */
-export const PLOT_FOLDER_DEFAULT = "plots";
+/** plot 的默认目录（插件设置 `plotFolder` 的缺省值）：跟着插件数据目录走 */
+export const PLOT_FOLDER_DEFAULT = `${WFJSON_FOLDER}/plots`;
 
 /** x 轴类型：日期 / 序号（顺序 = 设置面板里的顺序） */
 export const PLOT_KINDS = ["date", "sequence"] as const;
@@ -40,8 +41,7 @@ export const PLOT_POINTS_MAX = 2000;
 export const PLOT_ID_PREFIX = "plot-";
 
 /**
- * 目录校验：去首尾空白 → 去掉结尾的 `/` → 空串回落 `plots`。
- * 与 `main.ts` 的 `normalizeDailyFolder()` **同口径**（契约 §M3「normalize 同 dailyFolder」）。
+ * 目录校验：去首尾空白 → 去掉结尾的 `/` → 空串回落 `PLOT_FOLDER_DEFAULT`。
  */
 export function normalizePlotFolder(value: unknown): string {
   if (typeof value !== "string") return PLOT_FOLDER_DEFAULT;

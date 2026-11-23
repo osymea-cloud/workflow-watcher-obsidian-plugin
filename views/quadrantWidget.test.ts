@@ -7,6 +7,7 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, test } from "node:test";
 
 import { setLang, type WfJsonDocument, type WfNode } from "../src/engine/index.ts";
@@ -205,5 +206,34 @@ describe("quadrantWidget · 点分区 → 右侧预览", () => {
     assert.equal(second.query(".wf-quad-partition--selected").length, 0);
     assert.equal(second.query(".wf-quad-node").length, 0);
     assert.equal(second.query(".wf-quad-empty")[0].text, "点击左侧任一分区查看任务");
+  });
+});
+
+describe("quadrantWidget · Phase 21 第 5 档斜纹（styles.css 静态断言）", () => {
+  /** 取某条规则的声明块（注释里也会提到这些选择器，先剥掉注释再找） */
+  const blockOf = (selector: string): string => {
+    const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    const start = css.indexOf(`${selector} {`);
+    assert.notEqual(start, -1, `styles.css 缺少「${selector}」`);
+    return css.slice(start, css.indexOf("}", start));
+  };
+
+  test("5 个及以上任务的档位再叠一层与描边同色的斜纹（4 / 5 档肉眼可分）", () => {
+    const block = blockOf(".wf-quad-partition--f5::after");
+    assert.match(block, /repeating-linear-gradient\(\s*45deg/, "斜纹用 45° 重复渐变");
+    assert.match(
+      block,
+      /rgb\(var\(--wf-quad-rgb\) \/ 0\.\d+\)/,
+      "斜纹颜色取该象限的描边色（--wf-quad-rgb），不引入新变量",
+    );
+    assert.match(block, /inset:\s*0/, "铺满分区");
+    assert.match(block, /border-radius:\s*inherit/, "跟着分区的圆角（描边内侧不露直角）");
+    assert.match(block, /pointer-events:\s*none/, "纯装饰：分区照样可点");
+  });
+
+  test("斜纹不遮数字：.wf-quad-count 用 z-index 压在上面", () => {
+    const block = blockOf(".wf-quad-count");
+    assert.match(block, /position:\s*relative/, "先建立层叠上下文");
+    assert.match(block, /z-index:\s*1/, "数字在斜纹之上");
   });
 });

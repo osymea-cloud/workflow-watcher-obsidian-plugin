@@ -41,7 +41,7 @@ export const ISSUE_CODES = {
   WFJSON_BLOCK_IGNORED: {
     severity: "info",
     title: "笔记内的 wfjson 代码块已被忽略",
-    hint: "本笔记已使用外置 JSON（_wfjson/…）。可运行「迁移当前文件到外置 JSON」把遗留代码块清掉（清理是幂等的）。",
+    hint: "本笔记已使用外置 JSON（_workflowwatcher/…）：数据以外置文件为准，笔记里的代码块只是遗留物，可以手动删掉。",
   },
   WFJSON_BLOCK_UNCLOSED: {
     severity: "error",
@@ -79,10 +79,17 @@ export const ISSUE_CODES = {
   SCHEMA_ENUM: { severity: "error", title: "字段取值不在允许集合内" },
   SCHEMA_CONST: { severity: "error", title: "字段取值必须为固定值" },
   SCHEMA_REQUIRED: { severity: "error", title: "缺少必填字段" },
+  /**
+   * Phase 40：**降为 warning**（不再拦看板）。
+   *
+   * 校验语义收窄成「关键字段齐不齐」：多出来的字段只是「不在 wfjson 设计内」，
+   * 不该让整块看板变成错误框。字段名单独在「统计 → schema警告」里列出来
+   * （`views/wfView.ts` 的 `renderSchemaWarningsWidget`），供人决定删不删。
+   */
   SCHEMA_UNKNOWN_FIELD: {
-    severity: "error",
+    severity: "warning",
     title: "出现 Schema 未定义的字段",
-    hint: "字段清单见 doc/datacontact/data_ixd_v0.md；新增字段需先升级 schemaVersion。",
+    hint: "字段清单见 doc/datacontact/data_ixd_v09.md；未定义字段不影响看板渲染，可在「统计 → schema警告」里查看。",
   },
   SCHEMA_ITEMS: { severity: "error", title: "数组内容不符合要求" },
   SCHEMA_RANGE: { severity: "error", title: "数值超出允许范围" },
@@ -268,6 +275,13 @@ export const ISSUE_CODES = {
     title: "wf-updated 与 JSON updatedAt 不一致",
     hint: "wf-updated 建议写 wfjson 中 updatedAt 的日期部分。",
   },
+  FRONTMATTER_KEY_MISMATCH: {
+    severity: "warning",
+    title: "wf-key 与 JSON noteKey 不一致",
+    hint:
+      "wf-key / noteKey 是笔记身份键（= 侧车文件名里的 ~<key>）：两侧不一致通常说明侧车是抄来的。" +
+      "删掉 wf-key 后随便改一次笔记（插件按当前路径重算并补写）即可。",
+  },
 } as const satisfies Record<string, IssueCodeDefinition>;
 
 export type IssueCode = keyof typeof ISSUE_CODES;
@@ -391,7 +405,7 @@ export function formatIssues(issues: readonly WfIssue[], options: FormatIssuesOp
     for (const detail of item.details ?? []) lines.push(`   · ${detail}`);
   });
   if (issues.length > shown.length) {
-    lines.push(t("issues.more", { count: issues.length - shown.length, max: maxIssues }));
+    lines.push(t("issues.more", { count: issues.length - shown.length }));
   }
   return lines.join("\n");
 }

@@ -12,11 +12,12 @@
  *
  * 可编辑字段（改动会刷 `root.updatedAt`）：
  *   `workflow.title` / `workflow.progress` / `workflow.state`（v0.7 §⑨-8）/
- *   `root.title` / `root.summary` / `root.type` /
- *   `root.importance` / `root.urgency` / `root.owner` / `root.dueAt` / `root.tags`
+ *   `workflow.archive`（Phase 45：四条复盘说明 summary / idea / review / tag）/
+ *   `root.type` / `root.importance` / `root.urgency` / `root.owner` / `root.dueAt` / `root.tags`
  * 明确**不碰**：`originId`、树结构（加 / 删节点走节点右键菜单）、
  * 节点 status / 计时 / 链接（各有专门入口）。
  * `workflow.state` 的「进行中」= 删键（`clear`），`archived` / `cancelled` = `patch`。
+ * Phase 45：`root.summary` 已废弃 —— 不再作为可编辑字段，说明改填 `workflow.archive`。
  *
  * 删除护栏（拒绝，一个字都不写；与 removeNode / archive.ts 同一套口径）：
  *   - 是文件里最后一个 workflow（Schema 的 `workflows` 是 `minItems: 1`）；
@@ -28,6 +29,7 @@
  * 任一条不过就整笔拒绝（Modal 保持打开，用户看到的是原因）。
  */
 
+import { applyWorkflowArchiveNotes, type ArchiveFormInput } from "./archive.ts";
 import { createNode, createWorkflow, type NewNodeInput } from "./factory.ts";
 import { checkIntegerInRange, checkIsoTimestamp } from "./nodeEdits.ts";
 import { formatLocalIso } from "./time.ts";
@@ -51,9 +53,11 @@ import { sanitizeTitle } from "./wfjsonWrite.ts";
  * ------------------------------------------------------------------ */
 
 /**
- * `patch` 的键（= 表单里的 10 个空格）：
+ * `patch` 的键（= 表单里的空格）：
  *  - `title` / `progress` 属于 workflow；`rootTitle` 与其余属于 root；
  *  - `rootTitle` 有意不叫 `title`，否则与 workflow 的 `title` 在 `clear` 里分不清谁是谁。
+ *
+ * Phase 45：删除 `summary`（节点概要已废弃）；四条复盘说明走 `WorkflowPatch.archive`。
  */
 export const WORKFLOW_EDIT_FIELDS = [
   "title",
@@ -61,7 +65,6 @@ export const WORKFLOW_EDIT_FIELDS = [
   "progress_max",
   /** @deprecated v1.6：根节点标题由 workflow.title 强制同步，本项仅为兼容旧调用方保留 */
   "rootTitle",
-  "summary",
   "type",
   "importance",
   "urgency",
@@ -81,7 +84,6 @@ export const WORKFLOW_EDIT_LABELS: Readonly<Record<WorkflowEditFieldKey, string>
   progress: "工作流已完成",
   progress_max: "工作流总量",
   rootTitle: "根节点标题",
-  summary: "根节点概要",
   type: "根节点类型",
   importance: "根节点重要度",
   urgency: "根节点紧急度",
@@ -100,7 +102,6 @@ export interface WorkflowPatch {
   progress_max?: number;
   /** @deprecated v1.6：根节点标题恒等于 workflow.title，写入时会被覆盖 */
   rootTitle?: string;
-  summary?: string;
   type?: string;
   importance?: number;
   urgency?: number;
@@ -114,6 +115,14 @@ export interface WorkflowPatch {
    * **「进行中」不要用本字段表达** —— 走 `clear: ["state"]`（删键）。
    */
   state?: WorkflowState;
+  /**
+   * Phase 45：四条复盘说明（`workflow.archive` 的 summary / idea / review / tag）。
+   *
+   * 普通工作流只写这四个键（**不合成** `archivedAt` / `from_*`）；
+   * 归档文件自己的 workflow 用同一张表改说明时，那三个事实键原样保留。
+   * 给了就按「非空覆盖 / 空删键」整组应用（见 `applyWorkflowArchiveNotes`）。
+   */
+  archive?: ArchiveFormInput;
 }
 
 /** 三个原语的共同返回：`ok=false` 时文档未被改动，只有 `reason` 有意义 */
@@ -238,9 +247,6 @@ function clearWorkflowField(workflow: WfWorkflow, key: WorkflowEditFieldKey): vo
     case "rootProgressMax":
       delete root.progress_max;
       return;
-    case "summary":
-      delete root.summary;
-      return;
     case "type":
       delete root.type;
       return;
@@ -292,11 +298,6 @@ function applyEdit(workflow: WfWorkflow, patch: WorkflowPatch, clear: readonly W
   if (patch.rootProgress !== undefined) root.progress = patch.rootProgress;
   if (patch.rootProgressMax !== undefined) root.progress_max = patch.rootProgressMax;
 
-  const summary = textOrUndefined(patch.summary);
-  if (patch.summary !== undefined) {
-    if (summary !== undefined) root.summary = summary;
-    else delete root.summary;
-  }
   const type = textOrUndefined(patch.type);
   if (patch.type !== undefined) {
     if (type !== undefined) root.type = type;
@@ -321,6 +322,9 @@ function applyEdit(workflow: WfWorkflow, patch: WorkflowPatch, clear: readonly W
   }
   // v0.7 §⑨-8：工作流状态（进行中不写这个键：patch 里没有就保持原样，清空走 clear）
   if (patch.state !== undefined && isWorkflowState(patch.state)) workflow.state = patch.state;
+
+  // Phase 45：四条复盘说明（workflow.archive）—— 放在最后，结尾的 JSON 比对天然包含它
+  if (patch.archive !== undefined) applyWorkflowArchiveNotes(workflow, patch.archive);
 
   return JSON.stringify(workflow) !== before;
 }
@@ -350,7 +354,7 @@ function anchorOf(node: WfNode): string {
  *  - `title` 必填（先过 `sanitizeTitle`：空 / 含换行 → 拒绝，含 `#` / `|` / `[` / `]` → 提示）；
  *  - `rootTitle` 缺省 = 工作流标题；新 root 显式给 `status=doing` + `startAt=now`
  *    （其余默认值交给 `createNode`：progress=1、collapsed=false、生成 nd-<uuid> 与 `^id` 锚点）；
- *  - 其余字段（summary / type / importance / urgency / owner / dueAt / tags）有值才写，不写空串。
+ *  - 其余字段（type / importance / urgency / owner / dueAt / tags / archive 四条说明）有值才写，不写空串。
  */
 export function addWorkflow(
   document: WfJsonDocument,
@@ -380,12 +384,10 @@ export function addWorkflow(
   warnings.push(...rootTitle.warnings);
 
   const rootInput: NewNodeInput = { title: rootTitle.title, status: "doing", startAt: formatLocalIso(now) };
-  const summary = textOrUndefined(patch.summary);
   const type = textOrUndefined(patch.type);
   const owner = textOrUndefined(patch.owner);
   const dueAt = textOrUndefined(patch.dueAt);
   const tags = cleanTags(patch.tags);
-  if (summary !== undefined) rootInput.summary = summary;
   if (type !== undefined) rootInput.type = type;
   if (owner !== undefined) rootInput.owner = owner;
   if (dueAt !== undefined) rootInput.dueAt = dueAt;
@@ -397,6 +399,8 @@ export function addWorkflow(
   if (patch.progress !== undefined) workflow.progress = patch.progress;
   // v0.7 §⑨-8：新增时也可以直接建成「完成 / 取消」（缺省 = 进行中）
   if (patch.state !== undefined && isWorkflowState(patch.state)) workflow.state = patch.state;
+  // Phase 45：新增时也可以直接带四条复盘说明（不合成 archivedAt / from_*）
+  if (patch.archive !== undefined) applyWorkflowArchiveNotes(workflow, patch.archive);
   document.workflows.push(workflow);
 
   return {

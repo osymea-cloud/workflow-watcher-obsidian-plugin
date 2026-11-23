@@ -237,7 +237,7 @@ describe("timeStats · 甘特图（Phase 5 ①）", () => {
     assert.equal(first.hours, 2.5);
     assert.equal(first.workflowTitle, "立项调查");
     assert.equal(first.nodeTitle, "调研竞品");
-    assert.equal(first.workflowIndex, 0, "Phase 8：workflows[0] → 下标 0（视图侧 6 色循环）");
+    assert.equal(first.workflowIndex, 0, "Phase 8：workflows[0] → 下标 0（视图侧 12 色循环，Phase 21）");
     assert.equal(first.startAt, "2026-10-02T09:00:00");
     assert.equal(row.totalHours, 2.7);
   });

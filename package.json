@@ -1,5 +1,5 @@
 {
-  "name": "wfjson-workflow",
+  "name": "workflow-watcher",
   "version": "0.1.0",
   "description": "用 wfjson 记录工作流树与节点纪要的 Obsidian 插件（纯 TS 引擎 + dataviewjs 笔记视图）",
   "main": "main.js",
@@ -7,11 +7,14 @@
     "dev": "node esbuild.config.mjs",
     "build": "npm run typecheck && node esbuild.config.mjs production",
     "typecheck": "tsc -noEmit -skipLibCheck",
-    "test": "node --test \"src/engine/**/*.test.ts\" \"views/emoWidget.test.ts\" \"views/quadrantWidget.test.ts\" \"views/plotWidget.test.ts\"",
+    "test": "node --test \"src/engine/**/*.test.ts\" \"views/quadrantWidget.test.ts\" \"views/plotWidget.test.ts\"",
     "test:views": "node --import ./views/obsidianResolve.mjs --test \"views/wfView.test.ts\"",
     "deploy": "node scripts/deploy.mjs",
     "deploy:enable": "node scripts/deploy.mjs --enable",
-    "version": "node version-bump.mjs && git add manifest.json versions.json"
+    "demo": "node scripts/generate-demo.mjs",
+    "version": "node version-bump.mjs && git add manifest.json versions.json",
+    "lint": "eslint .",
+    "index": "node scripts/generate-symbols.mjs"
   },
   "keywords": [
     "obsidian",
@@ -22,9 +25,15 @@
   "author": "yjm",
   "license": "MIT",
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@eslint/json": "^2.1.1",
     "@types/node": "^22.15.3",
     "esbuild": "^0.25.0",
+    "eslint": "^10.14.0",
+    "eslint-plugin-obsidianmd": "^0.4.2",
     "obsidian": "latest",
-    "typescript": "^5.8.3"
+    "tsx": "^4.23.15",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.72.1"
   }
 }

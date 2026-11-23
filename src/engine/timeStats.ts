@@ -262,7 +262,7 @@ export interface GanttSpan {
   nodeTitle: string;
   /**
    * 该条目所属 workflow 在 `document.workflows[]` 里的下标（Phase 8：甘特图按工作流着色）。
-   * 视图侧取 `% 6` 映射到主题的 6 种时间色，超过 6 个工作流时循环。
+   * 视图侧取 `% 12` 映射到主题的 12 种时间色（Phase 21），超过 12 个工作流时循环。
    */
   workflowIndex: number;
   /** 原始时间串（悬浮提示里给完整区间） */

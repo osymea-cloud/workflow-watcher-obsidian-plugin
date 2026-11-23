@@ -66,6 +66,13 @@ export const newWorkflowId = (): string => newId("workflow");
 export const newNodeId = (): string => newId("node");
 export const newLinkId = (): string => newId("link");
 
+/** 由稳定 id 派生 16 位短 id（归档文件名用）：去前缀 → 小写 → 只留 [0-9a-z] → 补零截断到 16 位。
+ * 确定性：同一个 id 永远得到同一个短 id，幂等重试据此认领归档文件。 */
+export function shortIdOf(id: string): string {
+  const raw = id.replace(/^[^-]+-/, "").toLowerCase().replace(/[^0-9a-z]/g, "");
+  return raw.padEnd(16, "0").slice(0, 16);
+}
+
 /** 由节点 id 推导 body 锚点：nd-xxx → ^nd-xxx */
 export function anchorForNode(nodeId: string): string {
   return ANCHOR_MARK + nodeId;

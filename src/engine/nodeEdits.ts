@@ -7,6 +7,7 @@
  *   appendChildNode → addChildNode    （添加子节点）
  *   removeNode      → deleteNode      （删除本节点）
  *   editNodeInfo    → setNodeInfo     （编辑节点信息：summary / type / importance / progress / owner / dueAt）
+ *   editNodeNote    → setNodeNote     （Phase 20：note 卡片正文 + 显示开关）
  *
  * 写盘统一由上层套进 `mutateFile` → `applyMutation`（安全闸门 → 1.0→1.1 升格 →
  * 三段写回 → 幂等校验），因此这里的每个函数都必须做到「要么把文档改对，要么什么都不动」：
@@ -14,13 +15,12 @@
  *
  * 约定（与契约 doc/datacontact/data_ixd_phase2_contract.md 第 4 节对齐）：
  *  - 受影响节点的 `updatedAt` 由本模块显式维护（applyMutation 只刷新 document.updatedAt）；
- *  - 删除节点时把它的 links / timeEntries / children / relations 摊平进父节点，
- *    正文纪要段落由 `removedNoteAnchors` 上报给 `writeBackDocument` 删除。
+ *  - 删除节点时把它的 timeEntries / children / relations 摊平进父节点，
+ *    旧文件里的成对纪要段落由 `removedNoteAnchors` 上报给写回层清掉。
  */
 
 import { createNode, type NewNodeInput } from "./factory.ts";
 import { anchorForNode } from "./ids.ts";
-import { renderNoteLinkLine } from "./noteSection.ts";
 import { findNode, findParentNode } from "./tree.ts";
 import { formatLocalIso, isIsoDateOrDateTime } from "./time.ts";
 import {
@@ -31,6 +31,7 @@ import {
   type WfJsonDocument,
   type WfLink,
   type WfNode,
+  type WfNoteItem,
   type WfRelation,
 } from "./types.ts";
 import { sanitizeTitle, type NoteLinkMerge } from "./wfjsonWrite.ts";
@@ -169,6 +170,8 @@ export function appendChildNode(
   if (input.owner !== undefined && input.owner.trim().length > 0) childInput.owner = input.owner.trim();
   if (input.dueAt !== undefined && input.dueAt.trim().length > 0) childInput.dueAt = input.dueAt.trim();
   if (input.tags !== undefined && input.tags.length > 0) childInput.tags = [...input.tags];
+  // Phase 34：父节点设置过「新建链接文档」的默认目录 → 新子节点继承（整棵子树共用一套落点）
+  if (parent.linkDir !== undefined && parent.linkDir.length > 0) childInput.linkDir = parent.linkDir;
   const child = createNode(childInput, now);
 
   if (!Array.isArray(parent.children)) parent.children = [];
@@ -215,8 +218,8 @@ function descendantIds(node: WfNode): string[] {
 
 export interface RemoveNodeOptions {
   /**
-   * Phase 9 删除弹窗二选一：`true`（默认）= 把被删节点的超链接行合并进父节点纪要段；
-   * `false` = 连本节点纪要段一起删除，不做合并。
+   * @deprecated Phase 27：纪要段范式已弃用 —— 删除节点只「删旧段」，不再有「合并链接」语义。
+   * 参数保留只为兼容旧调用方（传什么都一样）。
    */
   mergeNoteSection?: boolean;
 }
@@ -228,10 +231,8 @@ export interface RemoveNodeOptions {
  *  3. `parent.children` 用 `node.children` 原位替换（等价于「删掉本节点、子节点上移」）；
  *  4. `parent.relations` += `node.relations`（过滤将成悬空 / 自依赖的两类目标）；
  *  5. completedAt 不参与合并；`parent.updatedAt` 刷新；
- *  6. Phase 9：`mergeNoteSection !== false` 时，被删节点的超链接（正文段落里的行 + 尚未迁移的
- *     `links[]`）由 `mergeNoteSections` 上报，写回时合并进父节点纪要段；本节点段落由
- *     `removedNoteAnchors` 删除（子节点段落若被连带吃掉，写回时按 JSON 补回）。
- *     `mergeNoteSection === false` 时不合并，只删本段。
+ *  6. Phase 27：`removedNoteAnchors` 只用于把旧文件里成对的纪要段**清掉**；
+ *     `mergeNoteSections` 恒为空数组（「把链接并进父节点」的语义已随纪要段弃用）。
  *
  * `links[]` 已弃用：这里不再把 `node.links` 并进 `parent.links`（那会让旧数据在 JSON 里继续流传）。
  */
@@ -281,26 +282,24 @@ export function removeNode(
   mergeRelations(parent, node, node.id, parent.id);
   parent.updatedAt = formatLocalIso(now);
 
+  // Phase 27：纪要段范式已弃用 —— 只上报「删旧段」，不再把 `links[]` 并进父节点纪要段。
+  // 旧文件若还留着 `^<id>` 的成对纪要段，写回时按这个锚点整段清掉。
   const anchor = node.noteAnchor ?? anchorForNode(node.id);
-  const legacyLines = (node.links ?? []).map(renderNoteLinkLine);
-  const mergeNoteSections =
-    options.mergeNoteSection === false
-      ? []
-      : [{ sourceAnchor: anchor, targetNodeId: parent.id, lines: legacyLines }];
 
   return {
     ok: true,
     parentId: parent.id,
     changedNodeIds: [parent.id, ...promotedIds],
     removedNoteAnchors: [anchor],
-    mergeNoteSections,
+    mergeNoteSections: [],
   };
 }
 
 /* ------------------------------------------------------------------ *
  * 4) 编辑节点信息（Phase 5 ②；契约见 data_ixd_discuss_interact_v0.4.md《Phase 5 定稿契约》）
  *
- * 只碰这 6 个字段：summary / type / importance / progress / owner / dueAt
+ * 只碰这 5 个字段：type / importance / progress / owner / dueAt（外加必填的 title）
+ * （`summary` 自 Phase 45 起废弃，不再由本模块读写）。
  * （`title` / `status` / `links` / `tags` … 各有专门的入口，这里一律不动）。
  *
  * 语义（**逐字段**）：`patch` 覆盖 / `clear` 删除 / 其余不动。
@@ -317,7 +316,6 @@ export const NODE_INFO_FIELDS = [
   "progress_max",
   "owner",
   "dueAt",
-  "summary",
   "type",
   "importance",
   "urgency",
@@ -331,7 +329,6 @@ export const NODE_INFO_LABELS: Readonly<Record<NodeInfoFieldKey, string>> = {
   progress_max: "总量",
   owner: "负责人",
   dueAt: "截止时间",
-  summary: "概要",
   type: "类型",
   importance: "重要度",
   urgency: "紧急度",
@@ -346,7 +343,6 @@ export const NODE_TYPE_SUGGESTIONS: readonly string[] = ["决策", "调查", "�
 /** 节点信息的分字段改动：`patch` = 覆盖，`clear` = 删除（见本节顶部语义） */
 export interface NodeInfoPatch {
   title?: string;
-  summary?: string;
   type?: string;
   importance?: number;
   urgency?: number;
@@ -359,6 +355,153 @@ export interface NodeInfoPatch {
 export interface NodeInfoEditResult extends NodeEditResult {
   /** 内容与现状完全一致 → 上层可以跳过写回（不刷 `updatedAt`） */
   unchanged?: boolean;
+}
+
+/* ------------------------------------------------------------------ *
+ * Phase 20：note 卡片（契约见 data_ixd_discuss_interact_v0.20.md《Phase 20 定稿契约》）
+ *
+ * 只碰 2 个键：`note`（文字 / 待办 的条目集合，空数组 → 删键）与 `noteVisible`（开关，false → 删键）。
+ * 不复用 `editNodeInfo`：它是「7 个字段 + patch 覆盖 / clear 删除」的契约，
+ * 塞进数组 + 布尔开关 + 空数组清键会把 `NODE_INFO_FIELDS` 与既有测试搅浑。
+ * ------------------------------------------------------------------ */
+
+/** note 的改动：`items` = 要写入的条目（内部逐条 trim、丢空行），`visible` = 药丸开关 */
+export interface NodeNotePatch {
+  items: WfNoteItem[];
+  visible: boolean;
+}
+
+/** 与 `NodeInfoEditResult` 同形：一个字都没改 → `unchanged=true`（上层不写盘） */
+export interface NodeNoteEditResult extends NodeEditResult {
+  /** 内容与现状完全一致（逐条 trim 后比较）→ 上层跳过写回、不刷 `updatedAt` */
+  unchanged?: boolean;
+}
+
+/**
+ * 把弹窗收来的条目「洗」成可落盘的形态：
+ *  1. 逐条 `trim`，**trim 后为空的行直接丢掉**（不给 Schema 的 `minLength: 1` 留坑）；
+ *  2. `done` 归一化：`true` → 写 `true`；`false` → 写 `false`；缺省 / `undefined` → **不写这个键**（= 文字）。
+ *
+ * 返回的是新数组（不改入参），便于 `editNodeNote` / `toggleNodeNoteDone` 共用。
+ */
+export function normalizeNoteItems(items: readonly WfNoteItem[]): WfNoteItem[] {
+  const normalized: WfNoteItem[] = [];
+  for (const item of items) {
+    const text = typeof item?.text === "string" ? item.text.trim() : "";
+    if (text.length === 0) continue;
+    const clean: WfNoteItem = { text };
+    if (item.done === true) clean.done = true;
+    else if (item.done === false) clean.done = false;
+    normalized.push(clean);
+  }
+  return normalized;
+}
+
+/**
+ * 设置 note 卡片的条目与开关（Phase 20）：
+ *  1. 节点不存在 → `ok=false` + 原因，文档一动不动；
+ *  2. 条目逐条 trim、空行丢弃；洗完为空 → `note` / `noteVisible` **两键一并删除**
+ *     （杜绝「有开关没内容」）；
+ *  3. `visible=false` → 删 `noteVisible`（不写 `false`）；`visible=true` → 写 `true`；
+ *  4. 与现状一致（逐条 trim 后比较）→ `unchanged=true`；有改动 → 刷 `node.updatedAt`。
+ */
+export function editNodeNote(
+  document: WfJsonDocument,
+  nodeId: string,
+  patch: NodeNotePatch,
+  now: Date = new Date(),
+): NodeNoteEditResult {
+  const node = findNode(document, nodeId);
+  if (!node) return { ok: false, reason: `节点 ${nodeId} 不存在（可能已被删除）`, changedNodeIds: [] };
+
+  const before = JSON.stringify(node);
+
+  const items = normalizeNoteItems(patch.items);
+  if (items.length === 0) {
+    delete node.note;
+    delete node.noteVisible;
+  } else {
+    node.note = items;
+    // OFF 即默认值 → 删键；不要写 `noteVisible: false`（与 collapsed 同一套惯例）
+    if (patch.visible) node.noteVisible = true;
+    else delete node.noteVisible;
+  }
+
+  if (JSON.stringify(node) === before) return { ok: true, changedNodeIds: [], unchanged: true };
+  node.updatedAt = formatLocalIso(now);
+  return { ok: true, changedNodeIds: [nodeId] };
+}
+
+/**
+ * note 卡片上的方框点击（Phase 20 修订）：把第 `index` 条在「待办 ↔ 已办」之间翻转。
+ *
+ * 只碰 `done` 一个键：
+ *  - `false`（待办）→ `true`（已办）；
+ *  - `true`（已办）→ `false`（待办）；
+ *  - 缺省（文字）→ **不处理**（`ok=false`）：文字要变待办/已办只能走弹窗的单选框，
+ *    卡片上本来也不给文字画方框，这里只是兜住脏数据 / 竞态。
+ *
+ * **不动 `noteVisible`**：翻一个待办不该顺手把卡片打开或关掉。
+ */
+export function toggleNodeNoteDone(
+  document: WfJsonDocument,
+  nodeId: string,
+  index: number,
+  now: Date = new Date(),
+): NodeNoteEditResult {
+  const node = findNode(document, nodeId);
+  if (!node) return { ok: false, reason: `节点 ${nodeId} 不存在（可能已被删除）`, changedNodeIds: [] };
+
+  const items = node.note ?? [];
+  const target = items[index];
+  if (!target) {
+    return { ok: false, reason: `第 ${index + 1} 条 note 不存在（可能已被删掉）`, changedNodeIds: [] };
+  }
+  if (target.done === undefined) {
+    return { ok: false, reason: "这一行是文字，不是待办；请到「设置 note 节点」里改类型", changedNodeIds: [] };
+  }
+
+  target.done = target.done !== true;
+  node.updatedAt = formatLocalIso(now);
+  return { ok: true, changedNodeIds: [nodeId] };
+}
+
+/**
+ * 折叠三角点击（Phase 21 ⑤）的返回：`collapsed` = 目标状态，
+ * `unchanged = true` → 文档本来就是这个状态（上层不写盘、不刷 `updatedAt`）。
+ */
+export interface NodeCollapseEditResult extends NodeEditResult {
+  unchanged?: boolean;
+}
+
+/**
+ * 折叠三角点击（Phase 21 ⑤）：把节点卡片的折叠态**直接写进 JSON**（`collapsed`）。
+ *
+ * 为什么落到 JSON（而不是像 Phase 15 那样只留视图会话内存）：
+ *  - 整块重渲染（切主题 / Dataview 自动重跑 / 拖拽改顺序后）不该把用户收起的子树又展开；
+ *  - 折叠态本来就是渲染事实，落盘后重启 Obsidian 也还在。
+ *
+ * 口径：
+ *  - `true` / `false` **都显式落盘**（不删键）—— 仓库里现有 wfjson 块本来就带 `"collapsed": false`，
+ *    保持键存在，写回后字节形状不变；
+ *  - 与现状一致 → `unchanged = true`（拖回原样 / 重复点击不产生写盘）；
+ *  - 有改动 → 刷 `node.updatedAt`（与 `editNodeNote` 同口径；`document.updatedAt` 由 applyMutation 管）。
+ */
+export function setNodeCollapsed(
+  document: WfJsonDocument,
+  nodeId: string,
+  collapsed: boolean,
+  now: Date = new Date(),
+): NodeCollapseEditResult {
+  const node = findNode(document, nodeId);
+  if (!node) return { ok: false, reason: `节点 ${nodeId} 不存在（可能已被删除）`, changedNodeIds: [] };
+
+  const next = collapsed === true;
+  if ((node.collapsed === true) === next) return { ok: true, changedNodeIds: [], unchanged: true };
+
+  node.collapsed = next;
+  node.updatedAt = formatLocalIso(now);
+  return { ok: true, changedNodeIds: [nodeId] };
 }
 
 /**
@@ -421,9 +564,6 @@ function clearInfoField(node: WfNode, key: NodeInfoFieldKey): void {
   switch (key) {
     case "title":
       return; // 必填字段：不允许清空（Modal 会把该行的清空按钮置灰）
-    case "summary":
-      delete node.summary;
-      break;
     case "type":
       delete node.type;
       break;
@@ -449,7 +589,7 @@ function clearInfoField(node: WfNode, key: NodeInfoFieldKey): void {
 }
 
 /** 写入一个文本字段（trim 后为空 → 删键，不写空串） */
-function setInfoText(node: WfNode, key: "summary" | "type" | "owner", raw: string): void {
+function setInfoText(node: WfNode, key: "type" | "owner", raw: string): void {
   const text = raw.trim();
   if (text.length === 0) {
     clearInfoField(node, key);
@@ -485,7 +625,6 @@ export function editNodeInfo(
     clearInfoField(node, key);
   }
   if (patch.title !== undefined) node.title = sanitizeTitle(patch.title).title;
-  if (patch.summary !== undefined) setInfoText(node, "summary", patch.summary);
   if (patch.type !== undefined) setInfoText(node, "type", patch.type);
   if (patch.owner !== undefined) setInfoText(node, "owner", patch.owner);
   if (patch.importance !== undefined) node.importance = patch.importance;
@@ -502,3 +641,57 @@ export function editNodeInfo(
   node.updatedAt = formatLocalIso(now);
   return { ok: true, changedNodeIds: [nodeId] };
 }
+
+/* ------------------------------------------------------------------ *
+ * Phase 34：链接文档的默认目录（`node.linkDir`）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 归一「新建链接文档的目录」（vault 相对路径）：
+ *  - `\` → `/`、合并重复斜杠、去掉首尾斜杠；
+ *  - 空串 = 库根（调用方按「删键 / 没设置」处理，这里只负责归一）；
+ *  - 含 `.` / `..` 段 → `undefined`（拒绝：不允许跳出库根或用相对段绕路）。
+ */
+export function normalizeNodeLinkDir(raw: string): string | undefined {
+  const text = raw.trim().replace(/\\/g, "/").replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, "");
+  if (text.length === 0) return "";
+  if (text.split("/").some((segment) => segment === "." || segment === "..")) return undefined;
+  // 文件系统禁用字符（与「文件名」的清洗口径一致；`/` 已在上面归一掉）
+  if (/[:*?"<>|]/.test(text)) return undefined;
+  return text;
+}
+
+export interface NodeLinkDirEditResult extends NodeEditResult {
+  /** true = 与现状一致（没写盘、没刷 `updatedAt`） */
+  unchanged?: boolean;
+}
+
+/**
+ * 设置节点的「新建链接文档」默认目录（Phase 34）：
+ *  1. 节点不存在 / 目录非法（`.` / `..` 段）→ `ok=false` + 原因，文档一动不动；
+ *  2. 空串 → **删键**（缺省即「没设置过」，不写空串）；
+ *  3. 与现状一致 → `unchanged=true`（不写盘）；
+ *  4. 有改动 → 写 `node.linkDir` 并刷新 `updatedAt`。
+ */
+export function setNodeLinkDir(
+  document: WfJsonDocument,
+  nodeId: string,
+  linkDir: string,
+  now: Date = new Date(),
+): NodeLinkDirEditResult {
+  const node = findNode(document, nodeId);
+  if (!node) return { ok: false, reason: `节点 ${nodeId} 不存在（可能已被删除）`, changedNodeIds: [] };
+
+  const normalized = normalizeNodeLinkDir(linkDir);
+  if (normalized === undefined) {
+    return { ok: false, reason: "目录不合法：不能包含 . / .. 段", changedNodeIds: [] };
+  }
+
+  if ((node.linkDir ?? "") === normalized) return { ok: true, changedNodeIds: [], unchanged: true };
+
+  if (normalized.length === 0) delete node.linkDir;
+  else node.linkDir = normalized;
+  node.updatedAt = formatLocalIso(now);
+  return { ok: true, changedNodeIds: [nodeId] };
+}
+

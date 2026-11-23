@@ -3,12 +3,12 @@
  * 保证「新建出来的东西」天然通过 Schema 与一致性检查）。
  *
  * 约定（与 consistency.ts 的检查一一对应）：
- *  - 节点 id = nd-<uuid>，noteAnchor = "^" + 节点 id；
+ *  - 节点 id = nd-<uuid>（Phase 27 起**不再**自动生成 `noteAnchor`：纪要段范式已弃用）；
  *  - statusHistory 的末条 to 始终等于当前 status（非 todo 时自动补一条初始事件）；
  *  - status=done 时补 progress=5 与 completedAt。
  */
 
-import { anchorForNode, newFileId, newLinkId, newNodeId, newWorkflowId } from "./ids.ts";
+import { newFileId, newLinkId, newNodeId, newWorkflowId } from "./ids.ts";
 import { formatLocalIso } from "./time.ts";
 import { SCHEMA_VERSION, PROGRESS_DEFAULT, PROGRESS_MAX_DEFAULT, type WfJsonDocument, type WfLink, type WfNode, type WfRelation, type WfStatusEvent, type WfWorkflow, type WorkflowState } from "./types.ts";
 
@@ -16,6 +16,7 @@ export interface NewNodeInput {
   title: string;
   /** 指定 id（导入已有数据 / 单测用）；缺省自动生成 nd-<uuid> */
   id?: string;
+  /** @deprecated Phase 45：节点概要已废弃（说明改填 `workflow.archive`）；仅为兼容旧调用方保留 */
   summary?: string;
   type?: string;
   status?: WfNode["status"];
@@ -34,8 +35,11 @@ export interface NewNodeInput {
   dueAt?: string;
   /** @deprecated v1.6 已弃用（仅为兼容旧调用方保留，新代码不要再传） */
   estimate?: string | number;
+  /** @deprecated Phase 27：纪要段已弃用 —— 不再写 `noteAnchor`（仅兼容旧调用方保留入参） */
   noteAnchor?: string;
   aiContext?: string;
+  /** Phase 34：新建链接文档的默认目录（vault 相对路径；缺省 = 没设置过） */
+  linkDir?: string;
   children?: WfNode[];
 }
 
@@ -50,11 +54,12 @@ export function createNode(input: NewNodeInput | string, now: Date = new Date())
     id,
     title: options.title,
     status,
-    noteAnchor: options.noteAnchor ?? anchorForNode(id),
     collapsed: options.collapsed ?? false,
     children: options.children ?? [],
   };
-  if (options.summary !== undefined) node.summary = options.summary;
+  // Phase 27：`noteAnchor` 不再生成（显式传入时仍照写，兼容旧数据 / 旧测试）
+  if (options.noteAnchor !== undefined) node.noteAnchor = options.noteAnchor;
+  // Phase 45：`summary` 已废弃 —— 不再写入新节点（旧数据里的值照读，不迁移）
   if (options.type !== undefined) node.type = options.type;
   if (options.owner !== undefined) node.owner = options.owner;
   if (options.startAt !== undefined) node.startAt = options.startAt;
@@ -63,6 +68,8 @@ export function createNode(input: NewNodeInput | string, now: Date = new Date())
   if (options.tags !== undefined) node.tags = [...options.tags];
   if (options.aliases !== undefined) node.aliases = [...options.aliases];
   if (options.aiContext !== undefined) node.aiContext = options.aiContext;
+  // Phase 34：链接文档的默认目录（显式给出才写；空串按「没设置」处理）
+  if (options.linkDir !== undefined && options.linkDir.length > 0) node.linkDir = options.linkDir;
 
   // v1.6：progress / progress_max 与 status 完全解耦（缺省 0 / 1，不再按状态对齐）
   node.progress = options.progress ?? PROGRESS_DEFAULT;

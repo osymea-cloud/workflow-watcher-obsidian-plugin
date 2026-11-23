@@ -231,14 +231,14 @@ export const TIME_CHILD_START = "2026-10-06T13:00:00+08:00";
 export const TIME_ARCHIVED_AT = "2026-10-08 18:30";
 /** 归档 md 里的 workflow id（归档时重新生成，与浓缩节点 `archive.workflowId` 一致） */
 export const ARCHIVE_WF_ID = "wf-uuid-101";
-/** 归档 md 路径：确定性路径 `archive/<workflowId>-<nodeId>.md`（nodeId = 浓缩节点 id） */
-export const ARCHIVE_FILE = `archive/${ARCHIVE_WF_ID}-${ARCHIVE_ROOT_ID}.md`;
+/** 归档文件路径：确定性路径 `archive/<workflowId>-<nodeId>.wf.json`（nodeId = 浓缩节点 id） */
+export const ARCHIVE_FILE = `archive/${ARCHIVE_WF_ID}-${ARCHIVE_ROOT_ID}.wf.json`;
 
 /**
  * 合法文档（schemaVersion = 1.3）：
  *  - 根节点 2 条已完成计时（2026-10-02 共 2.5h、2026-10-05 共 6h）；
  *  - 第 2 个子节点 1 条已完成计时（2026-10-06 共 1h）；
- *  - 归档 workflow 的根节点带 `archive`（v1.3 结构，Phase 4 定稿：含 file / workflowId / schemaVersion）。
+ *  - 归档 workflow 的根节点带 `archive`（Phase 39 定稿：节点侧只有 `{ workflowId }`）。
  */
 export function validDocument13(): WfJsonDocument {
   const document = clone(validDocument11());
@@ -255,13 +255,7 @@ export function validDocument13(): WfJsonDocument {
   ];
 
   document.workflows[1].root.archive = {
-    summary: "实现方案已收敛",
-    idea: "先验证再实现",
-    review: "把估算拆得更细",
-    archivedAt: TIME_ARCHIVED_AT,
-    file: ARCHIVE_FILE,
     workflowId: ARCHIVE_WF_ID,
-    schemaVersion: "1.3",
   };
   return document;
 }

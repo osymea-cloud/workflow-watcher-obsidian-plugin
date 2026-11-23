@@ -45,19 +45,25 @@ function unquote(value: string): string {
   return trimmed;
 }
 
-/** 拆分内联数组 `[a, "b, c"]`（只按引号外层的逗号切分） */
+/**
+ * 拆分内联数组 `[a, "b, c"]`（只按引号外层的逗号切分）。
+ *
+ * Phase 35：**引号原样留着**交给 `unquote` 处理 —— `""` 是「这一项是空串」的显式占位
+ * （多归属的 id 列表用空串对齐），不能被当成「没写」丢掉。
+ */
 function splitInlineArray(body: string): string[] {
   const items: string[] = [];
   let current = "";
   let quote: string | null = null;
   for (const char of body) {
     if (quote) {
+      current += char;
       if (char === quote) quote = null;
-      else current += char;
       continue;
     }
     if (char === '"' || char === "'") {
       quote = char;
+      current += char;
       continue;
     }
     if (char === ",") {
@@ -184,7 +190,18 @@ function formatScalarValue(value: string): string {
 }
 
 /**
- * 逐行 upsert 一个 frontmatter 标量字段（**不解析整段 YAML**，容忍其余非严格写法）。
+ * 内联数组里的一项：空串必须写成 `""`（裸空项会被 YAML / 本模块的解析当成「没写」，
+ * 四键按下标对齐就会错位）；其余同标量。
+ */
+function formatListItemValue(value: string): string {
+  return value.length === 0 ? '""' : formatScalarValue(value);
+}
+
+/**
+ * 逐行 upsert **一行** frontmatter 字段（**不解析整段 YAML**，容忍其余非严格写法）。
+ *
+ * `fieldLine === undefined` = 删键。`setFrontmatterField`（标量）与
+ * `setFrontmatterFieldList`（多值 → 内联数组）都只是先把行拼好、再交给它。
  *
  * 为什么需要它：`app.fileManager.processFrontMatter` 用严格 YAML 解析整块 frontmatter，
  * 遇到用户笔记里既有的非严格写法（例：`wf-tags: [x]` 后紧跟 `- y`）会直接抛错，
@@ -198,20 +215,19 @@ function formatScalarValue(value: string): string {
  *
  * 只写一行 → 其余字段（含插件不认识的字段、注释、空行）一字不动。
  */
-export function setFrontmatterField(markdown: string, key: string, value?: string): string {
+function upsertFrontmatterLine(markdown: string, key: string, fieldLine: string | undefined): string {
   const bom = markdown.startsWith("\uFEFF") ? "\uFEFF" : "";
   const body = bom.length > 0 ? markdown.slice(1) : markdown;
   const eol = body.includes("\r\n") ? "\r\n" : "\n";
   const lines = body.split(/\r?\n/);
-  const fieldLine = `${key}: ${formatScalarValue(value ?? "")}`.trimEnd();
   const keyPattern = new RegExp(`^\\s*${escapeRegExp(key)}\\s*:`);
 
   const prependFrontmatter = (): string => {
-    const header = ["---", fieldLine, "---"].join(eol);
+    const header = ["---", fieldLine ?? "", "---"].join(eol);
     return `${bom}${header}${eol}${body}`;
   };
   // 删除时：没有 frontmatter 就没什么可删（正文里的同名行不是本插件的字段）
-  if (value === undefined && (lines.length === 0 || lines[0].trim() !== "---")) {
+  if (fieldLine === undefined && (lines.length === 0 || lines[0].trim() !== "---")) {
     return `${bom}${body}`;
   }
 
@@ -226,7 +242,7 @@ export function setFrontmatterField(markdown: string, key: string, value?: strin
     }
   }
   // `---` 没闭合 → 这段不是本插件该动的 frontmatter，按「没有 frontmatter」处理
-  if (closing === -1) return value === undefined ? `${bom}${body}` : prependFrontmatter();
+  if (closing === -1) return fieldLine === undefined ? `${bom}${body}` : prependFrontmatter();
 
   const output: string[] = [];
   let replaced = false;
@@ -234,7 +250,7 @@ export function setFrontmatterField(markdown: string, key: string, value?: strin
     const line = lines[i];
     if (!replaced && i > 0 && i < closing && keyPattern.test(line)) {
       replaced = true;
-      if (value !== undefined) output.push(fieldLine);
+      if (fieldLine !== undefined) output.push(fieldLine);
       // 原值写成块序列（`key:` + 后续 `- x`）时，这些子项属于该键，一起处理
       let cursor = i + 1;
       while (cursor < closing && /^\s*-\s+/.test(lines[cursor])) cursor += 1;
@@ -243,7 +259,35 @@ export function setFrontmatterField(markdown: string, key: string, value?: strin
     }
     output.push(line);
   }
-  if (!replaced && value !== undefined) output.splice(closing, 0, fieldLine);
+  if (!replaced && fieldLine !== undefined) output.splice(closing, 0, fieldLine);
 
   return `${bom}${output.join(eol)}`;
+}
+
+/**
+ * 写一个**标量** frontmatter 字段（`value === undefined` → 删键）。
+ *
+ * 口径见 `upsertFrontmatterLine`：只改这一行，其余字段 / 注释 / 空行一字不动，
+ * BOM 与换行风格原样保留。
+ */
+export function setFrontmatterField(markdown: string, key: string, value?: string): string {
+  const fieldLine = value === undefined ? undefined : `${key}: ${formatScalarValue(value)}`.trimEnd();
+  return upsertFrontmatterLine(markdown, key, fieldLine);
+}
+
+/**
+ * 写一个**多值** frontmatter 字段（Phase 35：一个资料文件可以同时挂多个节点）。
+ *
+ * 规则（与 `parseFrontmatter` / Obsidian 的 YAML 解析都能 round-trip）：
+ *  - `values.length === 0` → 删键；
+ *  - 只有 1 项 → 写成标量（老文件的单归属保持零差异）；
+ *  - 多项 → 内联数组 `key: [a, "b c"]`；空串写成 `""` 占位（四键按下标对齐）。
+ */
+export function setFrontmatterFieldList(markdown: string, key: string, values: readonly string[]): string {
+  if (values.length === 0) return upsertFrontmatterLine(markdown, key, undefined);
+  if (values.length === 1) {
+    return upsertFrontmatterLine(markdown, key, `${key}: ${formatScalarValue(values[0])}`.trimEnd());
+  }
+  const items = values.map(formatListItemValue).join(", ");
+  return upsertFrontmatterLine(markdown, key, `${key}: [${items}]`);
 }

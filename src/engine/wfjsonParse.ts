@@ -227,7 +227,7 @@ export interface WfJsonTextParseResult {
  * 严格 JSON 文本解析（不做 Schema 校验）。
  *
  * 与 `parseWfJsonBlock` 共用同一套严格性预扫描；区别只在于输入是「一段 JSON 文本」，
- * 因此外置 JSON（`_wfjson/` 下的 `*.wf.json`）可以直接复用，行号以该文件为准（`lineBase = 1`）。
+ * 因此外置 JSON（`_workflowwatcher/` 下的 `*.wf.json`）可以直接复用，行号以该文件为准（`lineBase = 1`）。
  */
 export function parseWfJsonText(source: string, lineBase = 1): WfJsonTextParseResult {
   const result: WfJsonTextParseResult = { text: source, lineBase, issues: [] };

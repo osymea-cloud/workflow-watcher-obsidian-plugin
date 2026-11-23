@@ -56,7 +56,7 @@ describe("addWorkflow · 新增工作流", () => {
     assert.equal(added.root.status, "doing");
     assert.equal(added.root.startAt, AT);
     assert.equal(added.root.updatedAt, AT);
-    assert.equal(added.root.noteAnchor, `^${result.rootId}`);
+    assert.equal("noteAnchor" in added.root, false, "Phase 27：不再生成 noteAnchor");
     assert.deepEqual(added.root.children, []);
   });
 
@@ -68,13 +68,13 @@ describe("addWorkflow · 新增工作流", () => {
         title: "任务 #7",
         rootTitle: "  起点  ",
         progress: 3,
-        summary: "  概要  ",
         type: "执行",
         importance: 4,
         urgency: 2,
         owner: " 张三 ",
         dueAt: "2026-10-31",
         tags: [" A ", "A", "", "B"],
+        archive: { summary: "  概要  " },
       },
       NOW,
     );
@@ -88,7 +88,9 @@ describe("addWorkflow · 新增工作流", () => {
     assert.equal(added.title, "任务 #7");
     assert.equal(added.progress, 3);
     assert.equal(added.root.title, "任务 #7", "v1.6：rootTitle 不生效，根节点标题 = workflow.title");
-    assert.equal(added.root.summary, "概要");
+    // Phase 45：四条复盘说明写在 workflow.archive（不合成 archivedAt / from_*）
+    assert.equal(added.archive?.summary, "概要");
+    assert.equal("archivedAt" in (added.archive ?? {}), false);
     assert.equal(added.root.type, "执行");
     assert.equal(added.root.importance, 4);
     assert.equal(added.root.urgency, 2);
@@ -178,10 +180,10 @@ describe("editWorkflow · 编辑工作流字段", () => {
         title: "  立项调查（改） ",
         rootTitle: "  调研竞品（改） ",
         progress: 5,
-        summary: " 新概要 ",
         importance: 4,
         urgency: 1,
         tags: ["x", " x ", "y"],
+        archive: { summary: " 新概要 " },
       },
       ["type", "owner", "dueAt"],
       NOW,
@@ -195,7 +197,9 @@ describe("editWorkflow · 编辑工作流字段", () => {
     assert.equal(workflow.title, "立项调查（改）");
     assert.equal(workflow.progress, 5);
     assert.equal(workflow.root.title, "立项调查（改）", "v1.6：改 workflow.title 强制覆盖根节点标题");
-    assert.equal(workflow.root.summary, "新概要");
+    // Phase 45：说明写在 workflow.archive；节点 summary 保持旧值、不再被写
+    assert.equal(workflow.archive?.summary, "新概要");
+    assert.equal(workflow.root.summary, "对比三家竞品的功能与定价", "废弃字段不再被覆盖");
     assert.equal(workflow.root.importance, 4);
     assert.equal(workflow.root.urgency, 1);
     assert.deepEqual(workflow.root.tags, ["x", "y"]);
@@ -211,7 +215,7 @@ describe("editWorkflow · 编辑工作流字段", () => {
     assert.ok(workflow);
     const updatedAt = workflow.root.updatedAt;
 
-    const result = editWorkflow(document, WF1_ID, { summary: "对比三家竞品的功能与定价" }, [], NOW);
+    const result = editWorkflow(document, WF1_ID, {}, [], NOW);
 
     assert.equal(result.ok, true);
     assert.equal(result.unchanged, true);
@@ -279,7 +283,7 @@ describe("applyWorkflowEdits · 整批编排（Modal 保存链路）", () => {
   test("一条都没改 → unchanged=true（上层跳过写回）", () => {
     const result = applyWorkflowEdits(
       clone(validDocument()),
-      { edits: [{ id: WF1_ID, patch: { summary: "对比三家竞品的功能与定价" } }] },
+      { edits: [{ id: WF1_ID, patch: {} }] },
       NOW,
     );
 
@@ -288,6 +292,32 @@ describe("applyWorkflowEdits · 整批编排（Modal 保存链路）", () => {
     assert.deepEqual(result.changedNodeIds, []);
     assert.deepEqual(result.editedWorkflowIds, []);
     assert.equal(result.structureChanged, false);
+  });
+
+  test("一条 plan 同改标题 + 四条复盘说明（同一笔写回，不合成事实键）", () => {
+    const document = clone(validDocument());
+    const result = applyWorkflowEdits(
+      document,
+      {
+        edits: [
+          {
+            id: WF1_ID,
+            patch: { title: "立项调查（归档版）", archive: { summary: " 收口 ", tag: ["复盘"] } },
+          },
+        ],
+      },
+      NOW,
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.structureChanged, false);
+    assert.deepEqual(result.changedNodeIds, [ROOT_ID], "标题改了 → 视图按根节点局部刷新");
+    const workflow = findWorkflow(document, WF1_ID);
+    assert.ok(workflow);
+    assert.equal(workflow.title, "立项调查（归档版）");
+    assert.deepEqual(workflow.archive, { summary: "收口", tag: ["复盘"] });
+    assert.equal("archivedAt" in (workflow.archive ?? {}), false);
+    assert.equal("from_workflow" in (workflow.archive ?? {}), false);
   });
 
   test("预检：同一 workflow 既删又改 / id 不存在 / 删光 / 标题空 / 非法值 → 整笔拒绝", () => {
@@ -315,7 +345,7 @@ describe("applyWorkflowEdits · 整批编排（Modal 保存链路）", () => {
     assert.equal(JSON.stringify(document), before, "预检不过 → 文档一动不动");
   });
 
-  test("写回链路：删掉一个 workflow → 代码块与正文段落一起清掉、零 error", () => {
+  test("写回链路：删掉一个 workflow → 代码块清掉、旧格式正文段落不动、零 error", () => {
     const result = applyMutation(
       validMarkdown11(),
       (document) => {
@@ -329,12 +359,12 @@ describe("applyWorkflowEdits · 整批编排（Modal 保存链路）", () => {
     assert.equal(result.success, true);
     assert.equal(result.changed, true);
     assert.equal(result.analysis.hasError, false);
-    assert.deepEqual(result.removedAnchors, ["^nd-uuid-004"]);
-    assert.equal(result.markdown.includes("nd-uuid-004"), false, "代码块里的节点与正文锚点一起消失");
-    assert.ok(result.markdown.includes("## 调研竞品 ^nd-uuid-001"), "别的工作流原样保留");
+    assert.deepEqual(result.removedAnchors, [], "旧格式标题段没有机器边界 → 不删（§5.3）");
+    assert.equal(result.markdown.includes(`"id": "${WF2_ID}"`), false, "代码块里的工作流已删");
+    assert.ok(result.markdown.includes(`## 调研竞品 ^${ROOT_ID}`), "旧格式正文段落原样保留");
   });
 
-  test("写回链路：新增 workflow → 正文补上根节点纪要段落（新锚点）", () => {
+  test("写回链路：新增 workflow → 只写代码块，不再往正文补纪要段落", () => {
     const holder: { rootId?: string } = {};
     const result = applyMutation(
       validMarkdown11(),
@@ -351,9 +381,10 @@ describe("applyWorkflowEdits · 整批编排（Modal 保存链路）", () => {
     assert.equal(result.changed, true);
     assert.equal(result.analysis.hasError, false);
     assert.ok(holder.rootId !== undefined);
-    assert.deepEqual(result.addedAnchors, [`^${holder.rootId}`]);
-    assert.ok(result.markdown.includes(`### 新工作流 ^${holder.rootId}`), "根节点标题行带 block 锚点（v1.6 起 = workflow.title）");
-    assert.ok(result.markdown.includes("新工作流"), "新工作流进了 wfjson 代码块");
+    assert.deepEqual(result.addedAnchors, [], "Phase 27：不再补纪要段");
+    assert.equal(result.markdown.includes("### 新工作流"), false, "正文不新增段落");
+    assert.ok(result.markdown.includes(`"id": "${holder.rootId}"`), "新工作流进了 wfjson 代码块");
+    assert.ok(result.markdown.includes("新工作流"));
   });
 });
 

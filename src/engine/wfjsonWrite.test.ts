@@ -340,14 +340,15 @@ describe("wfjsonWrite · v1.1（state / 两步聚合 / 三段写回）", () => {
     assert.equal(buildFrontmatterSummary(document, NOW).status, "todo");
   });
 
-  test("writeBackDocument：一次搞定代码块 + 摘要 + 纪要段落，且幂等", () => {
+  test("writeBackDocument：一次搞定代码块 + 摘要 + 清旧纪要段，且幂等", () => {
     const document = clone(validDocument());
     document.updatedAt = "2026-10-11T10:30:00+08:00";
 
     const first = writeBackDocument("# 笔记\n", document, { now: NOW });
     assert.equal(first.action, "appended");
     assert.equal(first.frontmatter, "created");
-    assert.deepEqual(first.addedAnchors, ["^nd-uuid-001", "^nd-uuid-002", "^nd-uuid-003", "^nd-uuid-004"]);
+    // Phase 27：不再补纪要段（正文只有 frontmatter + 代码块）
+    assert.deepEqual(first.addedAnchors, []);
     assert.ok(first.markdown.startsWith("---\nwf-tags: [竞品]\n"));
     assert.deepEqual(analyzeMarkdown(first.markdown).issues, []);
 
@@ -355,6 +356,7 @@ describe("wfjsonWrite · v1.1（state / 两步聚合 / 三段写回）", () => {
     assert.equal(second.action, "replaced");
     assert.equal(second.frontmatter, "updated");
     assert.deepEqual(second.addedAnchors, []);
+    assert.deepEqual(second.removedAnchors, []);
     assert.equal(second.markdown, first.markdown);
   });
 });
@@ -459,33 +461,52 @@ describe("wfjsonWrite · 纪要段落删除（removeNoteSections）", () => {
   });
 });
 
-describe("wfjsonWrite · 删除节点的超链接合并 / 删除（Phase 9）", () => {
-  test("merge=true 合并进父段；merge=false 直接删段；两路都无 error", () => {
+describe("wfjsonWrite · 删除节点的旧纪要段清理（Phase 27 §5.3）", () => {
+  test("旧格式标题段与 links[] 原样保留（不再合并进父段）", () => {
     const seed = validMarkdown();
     const withLink = clone(validDocument());
     withLink.workflows[0].root.children[0].links = [
       { id: "lk-merge", type: "web", target: "https://example.com/merge", label: "合并链接" },
     ];
 
-    const mergedDoc = clone(withLink);
-    const mergedEdit = removeNode(mergedDoc, "nd-uuid-002", NOW);
-    const merged = writeBackDocument(seed, mergedDoc, {
+    const edit = removeNode(withLink, "nd-uuid-002", NOW);
+    const result = writeBackDocument(seed, withLink, {
       now: NOW,
-      removedNoteAnchors: mergedEdit.removedNoteAnchors,
-      mergeNoteSections: mergedEdit.mergeNoteSections,
-    }).markdown;
-    assert.ok(merged.includes("https://example.com/merge"), "父节点纪要段应出现被删节点的链接");
-    assert.equal(analyzeMarkdown(merged).hasError, false);
+      removedNoteAnchors: edit.removedNoteAnchors,
+      mergeNoteSections: edit.mergeNoteSections,
+    });
 
-    const droppedDoc = clone(withLink);
-    const droppedEdit = removeNode(droppedDoc, "nd-uuid-002", NOW, { mergeNoteSection: false });
-    const dropped = writeBackDocument(seed, droppedDoc, {
+    assert.equal(result.markdown.includes("https://example.com/merge"), false, "不再把链接并进父节点纪要段");
+    assert.deepEqual(result.removedAnchors, [], "旧格式标题段没有机器边界 → 不删");
+    assert.ok(result.markdown.includes("### 整理结论 ^nd-uuid-002"), "旧格式标题段原样保留");
+    assert.equal(result.markdown.includes('"id": "nd-uuid-002"'), false, "代码块里的节点已删");
+    assert.equal(analyzeMarkdown(result.markdown).hasError, false);
+  });
+
+  test("成对标志段（<!-- wf-note:begin/end -->）按 removedNoteAnchors 整段清掉", () => {
+    const paired = [
+      "<!-- wf-note:begin:nd-uuid-002 -->",
+      "### 整理结论",
+      "",
+      "段内正文（应随标志段一起清掉）",
+      "",
+      "<!-- wf-note:end:nd-uuid-002 -->",
+      "",
+    ].join("\n");
+    const seed = `${validMarkdown()}\n${paired}`;
+
+    const result = writeBackDocument(seed, clone(validDocument()), {
       now: NOW,
-      removedNoteAnchors: droppedEdit.removedNoteAnchors,
-      mergeNoteSections: droppedEdit.mergeNoteSections,
-    }).markdown;
-    assert.equal(dropped.includes("https://example.com/merge"), false, "选择删除时链接不应出现在父段");
-    assert.equal(analyzeMarkdown(dropped).hasError, false);
+      removedNoteAnchors: ["^nd-uuid-002"],
+    });
+
+    assert.deepEqual(result.removedAnchors, ["^nd-uuid-002"]);
+    assert.equal(result.markdown.includes("wf-note:begin:nd-uuid-002"), false, "开始标志已清掉");
+    assert.equal(result.markdown.includes("wf-note:end:nd-uuid-002"), false, "结束标志已清掉");
+    assert.equal(result.markdown.includes("段内正文（应随标志段一起清掉）"), false, "段内正文一并清掉");
+    // 旧格式（无标志）段落不动 —— 仓库口径：没有机器边界就不删，免得吃正文
+    assert.ok(result.markdown.includes("### 整理结论 ^nd-uuid-002"), "旧格式段落保留");
+    assert.equal(analyzeMarkdown(result.markdown).hasError, false);
   });
 });
 

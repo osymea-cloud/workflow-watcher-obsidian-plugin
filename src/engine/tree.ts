@@ -37,6 +37,39 @@ export function walkNodes(document: WfJsonDocument): NodeVisit[] {
   return document.workflows.flatMap((workflow) => walkWorkflow(workflow));
 }
 
+/**
+ * 先序遍历「若干棵子树」（Phase 27 M2）。
+ *
+ * 用途：未分类伪流的隐藏 root 不参与统计，需要的是「只遍历 root.children」——
+ * 直接把 `root` 换成 `root.children` 再走一遍即可（顺序与 `walkWorkflow` 一致）。
+ */
+export function walkSubtree(
+  nodes: readonly WfNode[],
+  workflow: WfWorkflow,
+  parent?: WfNode,
+  basePath: readonly WfNode[] = [],
+): NodeVisit[] {
+  const visits: NodeVisit[] = [];
+  const visit = (node: WfNode, parentNode: WfNode | undefined, index: number, path: WfNode[]): void => {
+    const nextPath = [...path, node];
+    visits.push({ node, workflow, parent: parentNode, index, depth: path.length, path: nextPath });
+    const children = Array.isArray(node.children) ? node.children : [];
+    children.forEach((child, childIndex) => visit(child, node, childIndex, nextPath));
+  };
+  nodes.forEach((node, index) => visit(node, parent, index, [...basePath]));
+  return visits;
+}
+
+/** `walkSubtree` 的「只要节点」版本 */
+export function flattenSubtree(
+  nodes: readonly WfNode[],
+  workflow: WfWorkflow,
+  parent?: WfNode,
+  basePath: readonly WfNode[] = [],
+): WfNode[] {
+  return walkSubtree(nodes, workflow, parent, basePath).map((visit) => visit.node);
+}
+
 /** 展平全部节点（去掉上下文） */
 export function flattenNodes(document: WfJsonDocument): WfNode[] {
   return walkNodes(document).map((visit) => visit.node);

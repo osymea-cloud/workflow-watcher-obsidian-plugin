@@ -51,7 +51,9 @@ export function describeValue(value: unknown, maxLength = 60): string {
   else if (typeof value === "number" || typeof value === "boolean") text = String(value);
   else if (Array.isArray(value)) text = `数组(${value.length} 项)`;
   else if (isPlainObject(value)) text = `对象(${Object.keys(value).length} 个字段)`;
-  else text = String(value);
+  // 兜底：symbol / bigint / 函数等非 JSON 值 —— 直接 `String(对象)` 只会得到 "[object Object]"
+  else if (typeof value === "bigint" || typeof value === "symbol" || typeof value === "function") text = String(value);
+  else text = Object.prototype.toString.call(value);
   return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
 }
 
@@ -85,7 +87,7 @@ function matchesType(value: unknown, type: string): boolean {
 
 function normalizeTypes(type: unknown): string[] | undefined {
   if (typeof type === "string") return [type];
-  if (Array.isArray(type) && type.every((item) => typeof item === "string")) return type as string[];
+  if (Array.isArray(type) && type.every((item) => typeof item === "string")) return type;
   return undefined;
 }
 
@@ -136,8 +138,7 @@ export function validateAgainstSchema(
   schema: JsonSchema,
   options: ValidateOptions = {},
 ): WfIssue[] {
-  const root =
-    options.rootSchema ?? (schema !== true && schema !== false ? (schema as JsonSchemaObject) : {});
+  const root = options.rootSchema ?? (schema !== true && schema !== false ? schema : {});
   const issues: WfIssue[] = [];
   validateNode(value, schema, "", root, issues, 0);
   return issues;
@@ -162,13 +163,13 @@ function validateNode(
     return;
   }
 
-  const node = schema as JsonSchemaObject;
+  const node = schema;
   // 双语提示：Schema 里 `x-hint` 是中文原文，`x-hint-en` 是英文；英文模式优先取后者
   const hint =
     getLang() === "en" && typeof node["x-hint-en"] === "string"
-      ? (node["x-hint-en"] as string)
+      ? node["x-hint-en"]
       : typeof node["x-hint"] === "string"
-        ? (node["x-hint"] as string)
+        ? node["x-hint"]
         : undefined;
 
   const ref = node["$ref"];

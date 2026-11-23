@@ -21,6 +21,7 @@ import {
   stateLabel,
   statusLabel,
   t,
+  tIn,
   weekdayName,
   workflowEditLabel,
 } from "./i18n.ts";
@@ -57,12 +58,24 @@ describe("i18n · 文案表与切换", () => {
     assert.equal(t("issues.summary", { errors: 1, warnings: 2, infos: 0 }), "Result: 1 error(s) · 2 warning(s) · 0 info");
     setLang("zh");
     assert.equal(t("issues.line", { line: 12 }), "第 12 行");
-    assert.equal(t("issues.more", { count: 3, max: 50 }), "… 另有 3 条问题未显示（maxIssues=50）");
+    assert.equal(t("issues.more", { count: 3, max: 50 }), "… 另有 3 条问题未显示");
   });
 
   test("t()：未登记的 key 原样回显（便于发现漏配）", () => {
     setLang("en");
     assert.equal(t("no.such.key"), "no.such.key");
+  });
+
+  test("tIn()：按指定语言取，不受当前语言影响；未登记 key 同样原样回显", () => {
+    setLang("en");
+    assert.equal(tIn("zh", "template.heading"), "纪要");
+    assert.equal(tIn("en", "template.heading"), "Notes");
+    assert.equal(tIn("zh", "template.notePlaceholder"), "（纪要待补充）");
+    assert.equal(tIn("en", "template.defaultTitle"), "New workflow");
+    assert.equal(tIn("zh", "template.defaultTitle"), "新工作流");
+    assert.equal(tIn("en", "no.such.key"), "no.such.key");
+    // t() 与 tIn(当前语言) 一致
+    assert.equal(t("template.heading"), tIn("en", "template.heading"));
   });
 
   test("状态 / 严重级别：中英对照不串味", () => {
@@ -126,6 +139,7 @@ const UI_SOURCES: readonly string[] = [
   "src/engine/noteSection.ts",
   "src/engine/schemaValidator.ts",
   "src/engine/stats.ts",
+  "src/engine/template.ts",
   "src/engine/timerEdits.ts",
   "src/engine/wfjsonParse.ts",
 ];
@@ -165,6 +179,34 @@ describe("i18n · 英文文案覆盖面", () => {
     assert.deepEqual(missing, []);
   });
 
+  test("Phase 35：链接已有文档 / 选择 / 追加结果的中英文案", () => {
+    setLang("zh");
+    assert.equal(t("view.linkDocs.addAddress"), "链接已有文档");
+    assert.equal(t("view.linkDocs.choose"), "选择");
+    assert.equal(t("view.linkDocs.attach"), "添加");
+    assert.equal(t("view.linkDocs.attached", { path: "a.md" }), "已关联：a.md");
+    assert.equal(
+      t("view.linkDocs.alreadyLinked", { path: "a.md" }),
+      "已在列表里：a.md（没有重复添加）",
+    );
+    assert.equal(t("view.linkDocs.emptyPath"), "先选一份文档，或填写它的路径");
+    assert.equal(t("view.linkDocs.outsideVault", { path: "C:/x.md" }), "不在当前库内：C:/x.md");
+    assert.equal(t("view.linkDocs.notFound", { path: "a.md" }), "库里找不到这份文档：a.md");
+    assert.match(t("view.linkDocs.pickUnsupported"), /^桌面端/);
+    assert.equal(t("view.linkDocs.pickFailed", { reason: "没权限" }), "打不开文件选择器：没权限");
+
+    setLang("en");
+    assert.equal(t("view.linkDocs.addAddress"), "Link existing document");
+    assert.equal(t("view.linkDocs.choose"), "Choose…");
+    assert.equal(t("view.linkDocs.attach"), "Add");
+    assert.equal(t("view.linkDocs.attached", { path: "a.md" }), "Linked: a.md");
+    assert.equal(
+      t("view.linkDocs.alreadyLinked", { path: "a.md" }),
+      "Already linked: a.md (no duplicate added)",
+    );
+    assert.equal(t("view.linkDocs.pickFailed", { reason: "denied" }), "Could not open the file picker: denied");
+  });
+
   test("源码里每个 issueMsg(\"…\") 的 key 都有英文模板", () => {
     const keys = staticKeys(/(?<![\w.$])issueMsg\(\s*"([^"]+)"/g);
     assert.ok(keys.length >= 40, `扫描到的校验消息 key 太少（${keys.length}）`);
@@ -196,7 +238,7 @@ describe("i18n · 英文文案覆盖面", () => {
     assert.equal(workflowEditLabel("rootProgress"), "已完成");
     assert.equal(workflowEditLabel("rootProgressMax"), "总量");
     assert.equal(workflowEditLabel("title"), "标题");
-    for (const key of ["title", "type", "summary", "importance", "urgency", "owner", "dueAt"]) {
+    for (const key of ["title", "type", "importance", "urgency", "owner", "dueAt"]) {
       assert.ok(!workflowEditLabel(key).includes("根节点"), `${key} 的标签不该再带「根节点」`);
       assert.ok(!workflowEditLabel(key).includes("工作流"), `${key} 的标签不该再带「工作流」`);
     }
@@ -224,6 +266,16 @@ describe("i18n · 英文文案覆盖面", () => {
     assert.equal(t("view.reorder.hint"), "开启后可拖动节点卡片，拖到另一节点上半 / 下半分别插入到其前 / 后");
     assert.equal(t("view.notify.nodeMoved"), "已调整节点顺序");
     assert.equal(t("view.notify.reorderFailed", { reason: "目标不合法" }), "调整节点顺序失败：目标不合法");
+    // Phase 21 ⑥：开关上方的拖拽规则说明（5 行，最后一行是「特别注意」）
+    const helpZh = t("view.reorder.help").split("\n");
+    assert.equal(helpZh.length, 5);
+    assert.match(helpZh[0], /^A--\^X--B\/C\/D: 将卡片X拖到卡片A下半部分/);
+    assert.match(helpZh[1], /^A--B\/C\/D\/\^X: 将卡片X拖到卡片B上半部分/);
+    assert.match(helpZh[2], /^A--\^X\.--B\/C\/D: 将折叠卡片X拖到卡片A下半部分/);
+    assert.match(helpZh[3], /^A--B\/C\/D\/\^X\.: 将折叠卡片X拖到卡片B上半部分/);
+    assert.equal(helpZh[4], "特别注意：父节点与子节点不能互换位置；根节点不能被拖动");
+    // Phase 21 ⑤：折叠态写回失败
+    assert.equal(t("view.notify.collapseFailed", { reason: "文件被占用" }), "折叠状态未写入：文件被占用");
     // Phase 16：小工具侧边栏 / 弹窗
     assert.equal(t("view.widget.sidebar"), "小工具");
     assert.equal(t("view.widget.gantt21"), "21天甘特图");
@@ -232,7 +284,7 @@ describe("i18n · 英文文案覆盖面", () => {
     assert.equal(t("view.widget.emptyArchive"), "还没有归档节点");
     assert.match(t("view.widget.placeholder"), /还没实现/);
     assert.equal(t("notice.settingsOpenFailed"), "打开插件设置失败");
-    // Phase 17：继续上次计时 / 泳道高度 / 卡片时间行
+    // Phase 17：继续上次计时 / 卡片时间行
     assert.equal(t("view.timer.resume", { title: "调研竞品" }), "上次：调研竞品");
     // Phase 18：文案改成「继续这个任务」；新增「上一个任务：」那一段
     assert.equal(t("view.timer.resumeAction"), "继续这个任务");
@@ -240,7 +292,6 @@ describe("i18n · 英文文案覆盖面", () => {
     assert.equal(t("view.card.elapsed", { days: 3 }), "已经过：3天");
     assert.equal(t("view.card.remain", { days: 0 }), "距结束：0天");
     assert.equal(t("view.card.links", { count: 2 }), "🔗 2");
-    assert.equal(t("settings.laneHeight.name"), "泳道高度（px）");
     setLang("en");
     const enTitle = t("view.gantt.title", { days: 21 });
     assert.equal(enTitle, "Gantt chart of the last 21 days");
@@ -260,6 +311,12 @@ describe("i18n · 英文文案覆盖面", () => {
     );
     assert.equal(t("view.notify.nodeMoved"), "Node order updated");
     assert.equal(t("view.notify.reorderFailed", { reason: "bad target" }), "Failed to reorder nodes: bad target");
+    // Phase 21（英文侧）
+    const helpEn = t("view.reorder.help").split("\n");
+    assert.equal(helpEn.length, 5);
+    assert.match(helpEn[0], /^A--\^X--B\/C\/D: drag card X onto the lower half of card A/);
+    assert.equal(helpEn[4], "Note: a parent and its own child cannot swap places; a root card cannot be dragged");
+    assert.equal(t("view.notify.collapseFailed", { reason: "locked" }), "Collapse state not written: locked");
     // Phase 16（英文侧）
     assert.equal(t("view.widget.sidebar"), "Widgets");
     assert.equal(t("view.widget.gantt21"), "21-day Gantt");
@@ -274,7 +331,6 @@ describe("i18n · 英文文案覆盖面", () => {
     assert.equal(t("view.timer.resumeTask", { title: "Research" }), "Last task: Research");
     assert.equal(t("view.card.elapsed", { days: 3 }), "Elapsed: 3d");
     assert.equal(t("view.card.remain", { days: 0 }), "Left: 0d");
-    assert.equal(t("settings.laneHeight.name"), "Lane body height (px)");
   });
 
   test("Schema 的每个 x-hint 都有 x-hint-en（英文界面的修复提示不留中文）", () => {
@@ -314,23 +370,11 @@ describe("i18n · Phase 18 新增 / 移除的 key", () => {
     "settings.resumePrompt.placeholder",
     "settings.cardWidth.name",
     "settings.cardWidth.desc",
-    "settings.dailyFolder.name",
-    "settings.dailyFolder.desc",
     "view.timer.resumeTask",
     "view.timer.resumeAction",
     "view.card.doneIn",
     "view.card.doneAgo",
     "view.gantt.tipDuration",
-    "widget.emo.today",
-    "widget.emo.recorded",
-    "widget.emo.empty",
-    "widget.emo.open",
-    "widget.emo.addTitle",
-    "widget.emo.sentenceLabel",
-    "widget.emo.sentencePlaceholder",
-    "widget.emo.imageLabel",
-    "widget.emo.imagePaste",
-    "widget.emo.zoom",
   ];
 
   test("中英都齐全（两种语言都不是空串，且不是「没登记的 key 原样回显」）", () => {
@@ -449,7 +493,7 @@ describe("i18n · Phase 19 M3 新增的 key（365 天 plot）", () => {
         kind: "日期",
         count: 2,
         unit: "kg",
-        hint: "x = YYYY-MM-DD",
+        hint: "日期，如 2026-01-01",
         path: "plots/plot-a.csv",
         name: "体重变化",
         lines: "3, 5",
@@ -485,24 +529,40 @@ describe("i18n · Phase 19 M3 新增的 key（365 天 plot）", () => {
   });
 });
 
-describe("i18n · Phase 19 M1 新增的 key", () => {
-  const PHASE19_KEYS: readonly string[] = [
-    "theme.emo.default",
-    "theme.emo.weave",
-    "theme.emo.candy",
-    "widget.emo.edit",
-    "widget.emo.editImage",
-    "widget.emo.editText",
-    "settings.emoTheme.name",
-    "settings.emoTheme.desc",
+
+describe("i18n · Phase 34 新增的 key（链接文档 / 第 6 个面板选项卡）", () => {
+  const PHASE34_KEYS: readonly string[] = [
+    "common.close",
+    "view.panel.tab.links",
+    "view.linkDocs.title",
+    "view.linkDocs.desc",
+    "view.linkDocs.list",
+    "view.linkDocs.refresh",
+    "view.linkDocs.empty",
+    "view.linkDocs.open",
+    "view.linkDocs.name",
+    "view.linkDocs.namePlaceholder",
+    "view.linkDocs.dir",
+    "view.linkDocs.dirPlaceholder",
+    "view.linkDocs.create",
+    "view.linkDocs.created",
+    "view.linkDocs.invalidName",
+    "view.linkDocs.invalidDir",
+    "view.linkDocs.noWorkflow",
+    "view.linkDocs.synced",
+    "view.linkDocs.syncFailed",
+    "view.menu.editLinkDocs",
+    "view.menu.moreLinks",
+    "view.notify.linkDocsCreated",
+    "view.notify.linkDirSaved",
   ];
 
   test("中英都齐全（两种语言都不是空串，且不是「没登记的 key 原样回显」）", () => {
-    for (const key of PHASE19_KEYS) {
+    for (const key of PHASE34_KEYS) {
       setLang("zh");
-      const zh = t(key);
+      const zh = t(key, { title: "选书", count: 2, path: "资料/选书.md", reason: "文件被占用" });
       setLang("en");
-      const en = t(key);
+      const en = t(key, { title: "选书", count: 2, path: "资料/选书.md", reason: "文件被占用" });
       assert.notEqual(zh, key, `${key} 缺中文`);
       assert.notEqual(en, key, `${key} 缺英文`);
       assert.ok(zh.length > 0 && en.length > 0, `${key} 文案为空`);
@@ -510,4 +570,16 @@ describe("i18n · Phase 19 M1 新增的 key", () => {
     setLang("zh");
   });
 });
+describe("i18n · 面板 note 选项卡（Phase 36）", () => {
+  test("view.panel.tab.note 中英都已登记", () => {
+    for (const lang of ["zh", "en"] as const) {
+      setLang(lang);
+      const label = t("view.panel.tab.note");
+      assert.notEqual(label, "view.panel.tab.note", `${lang} 缺 view.panel.tab.note`);
+      assert.ok(label.length > 0, `${lang} 的文案不能为空`);
+    }
+    setLang("zh");
+  });
+});
+
 

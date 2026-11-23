@@ -15,6 +15,20 @@ import {
   summarizeWorkflow,
 } from "./stats.ts";
 import { ROOT_ID, WF1_ID, WF2_ID, clone, leaf, validDocument, validDocument11 } from "./testFixtures.ts";
+import { UNCLASSIFIED_WORKFLOW_ID, type WfJsonDocument, type WfNode } from "./types.ts";
+
+/**
+ * 造一份「带未分类伪流」的文档（Phase 27 M2：容器 = 普通 workflow，root 只当容器）。
+ * 直接手写而不走 `ensureUnclassifiedWorkflow` —— 这里只验统计口径，不验懒创建。
+ */
+function withUnclassified(children: WfNode[], document: WfJsonDocument): WfJsonDocument {
+  document.workflows.push({
+    id: UNCLASSIFIED_WORKFLOW_ID,
+    title: "未分类",
+    root: { id: "nd-u-root", title: "未分类", status: "todo", progress: 0, children },
+  });
+  return document;
+}
 
 describe("stats · 节点计数", () => {
   test("countNodeStatuses：total 含 done / cancelled", () => {
@@ -114,6 +128,59 @@ describe("stats · workflow / 文档汇总", () => {
     assert.deepEqual(groups.active.map((workflow) => workflow.id), [WF1_ID]);
     assert.deepEqual(groups.archived.map((workflow) => workflow.id), [WF2_ID]);
     assert.deepEqual(groups.cancelled, []);
+    assert.equal(groups.unclassified, undefined);
+  });
+
+  /* Phase 27 M2：未分类伪流（保留 id）不进 active，单独一桶 */
+  test("groupWorkflows：未分类伪流单独分桶，不进 active", () => {
+    const document = withUnclassified(
+      [
+        leaf("nd-u-1", "随手记", { status: "doing" }),
+        leaf("nd-u-2", "买咖啡豆"),
+      ],
+      validDocument(),
+    );
+    const groups = groupWorkflows(document);
+
+    assert.equal(groups.unclassified?.id, UNCLASSIFIED_WORKFLOW_ID);
+    assert.deepEqual(groups.active.map((workflow) => workflow.id), [WF1_ID, WF2_ID]);
+    assert.ok(!groups.active.some((workflow) => workflow.id === UNCLASSIFIED_WORKFLOW_ID));
+  });
+
+  test("summarizeDocument：未分类只算 root.children（隐藏 root 不计）", () => {
+    const document = withUnclassified(
+      [
+        leaf("nd-u-1", "随手记", { status: "doing" }),
+        leaf("nd-u-2", "买咖啡豆"),
+      ],
+      clone(validDocument()),
+    );
+    const summary = summarizeDocument(document);
+
+    assert.equal(summary.activeWorkflowCount, 2, "未分类不算一条工作流");
+    assert.equal(summary.nodeTotal, 6, "隐藏 root 不计入 nodeTotal（4 + 2）");
+    assert.equal(summary.active.total, 6);
+    assert.equal(summary.active.doing, 2, "doing = 1（真实流）+ 1（未分类）");
+    assert.equal(formatStatusOverview(summary), "进行中：2/6 阻滞：0");
+  });
+
+  test("summarizeDocument：空的未分类伪流不改变任何数字", () => {
+    const document = withUnclassified([], clone(validDocument()));
+    const summary = summarizeDocument(document);
+
+    assert.equal(summary.activeWorkflowCount, 2);
+    assert.equal(summary.nodeTotal, 4);
+    assert.equal(summary.active.total, 4);
+    assert.deepEqual(summary.active, summarizeDocument(validDocument()).active);
+  });
+
+  test("summarizeWorkflow：未分类保持通用口径（root 也算节点，供归档 / 甘特复用）", () => {
+    const document = withUnclassified([leaf("nd-u-1", "随手记")], clone(validDocument()));
+    const workflow = document.workflows[2];
+    const summary = summarizeWorkflow(workflow);
+
+    assert.equal(summary.total, 2, "通用口径 = root + 1 个 child");
+    assert.equal(summary.active, true);
   });
 
   test("isWorkflowSettled：节点全 done / cancelled 视为已收尾", () => {

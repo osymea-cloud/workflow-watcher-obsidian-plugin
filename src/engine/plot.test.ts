@@ -57,15 +57,16 @@ function plotOf(overrides: Partial<PlotDocument> = {}): PlotDocument {
 }
 
 describe("plot · 目录 / 类型 / id / 路径", () => {
-  test("目录校验与 normalizeDailyFolder 同口径：去空白、去结尾斜杠、空串回落 plots", () => {
-    assert.equal(PLOT_FOLDER_DEFAULT, "plots");
+  test("目录校验：去空白、去结尾斜杠、空串回落默认目录", () => {
+    // 默认目录跟着插件数据目录走（`main.ts` 的 DEFAULT_SETTINGS.plotFolder 与它一致）
+    assert.equal(PLOT_FOLDER_DEFAULT, "_workflowwatcher/plots");
     assert.equal(normalizePlotFolder("plots"), "plots");
     assert.equal(normalizePlotFolder("  metrics/  "), "metrics");
     assert.equal(normalizePlotFolder("metrics//"), "metrics");
-    assert.equal(normalizePlotFolder(""), "plots");
-    assert.equal(normalizePlotFolder("   "), "plots");
-    assert.equal(normalizePlotFolder(undefined), "plots");
-    assert.equal(normalizePlotFolder(42), "plots");
+    assert.equal(normalizePlotFolder(""), PLOT_FOLDER_DEFAULT);
+    assert.equal(normalizePlotFolder("   "), PLOT_FOLDER_DEFAULT);
+    assert.equal(normalizePlotFolder(undefined), PLOT_FOLDER_DEFAULT);
+    assert.equal(normalizePlotFolder(42), PLOT_FOLDER_DEFAULT);
   });
 
   test("类型白名单：date / sequence，其它值回落 date", () => {
@@ -95,7 +96,7 @@ describe("plot · 目录 / 类型 / id / 路径", () => {
   test("路径：文件名 = id（改 name 不动文件），CSV 落在同一个目录", () => {
     assert.equal(plotPath("plots", "plot-a"), "plots/plot-a.json");
     assert.equal(plotCsvPath("metrics/", "plot-a"), "metrics/plot-a.csv");
-    assert.equal(plotPath("", "plot-a"), "plots/plot-a.json", "空目录回落默认值");
+    assert.equal(plotPath("", "plot-a"), `${PLOT_FOLDER_DEFAULT}/plot-a.json`, "空目录回落默认值");
     assert.equal(plotIdFromPath("plots/plot-a.json"), "plot-a");
     assert.equal(plotIdFromPath("A/B/plot-a.json"), "plot-a", "嵌套目录也认");
     assert.equal(plotIdFromPath("plots/plot-a.csv"), undefined, "CSV 不是 plot 文件");

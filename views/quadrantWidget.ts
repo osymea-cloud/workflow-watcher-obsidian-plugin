@@ -113,7 +113,7 @@ export function renderQuadrant(body: HTMLElement, document: WfJsonDocument, now:
     cell.title = label;
     cell.setAttribute("aria-label", label);
     if (partition.nodes.length > 0) {
-      cell.createEl("span", { cls: "wf-quad-count", text: String(partition.nodes.length) });
+      cell.createSpan({ cls: "wf-quad-count", text: String(partition.nodes.length) });
     }
     cell.onclick = () => select(partition, cell);
   }

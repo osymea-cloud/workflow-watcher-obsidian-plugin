@@ -15,9 +15,9 @@ import {
 } from "./schemaValidator.ts";
 import { WFJSON_SCHEMA } from "./wfjsonSchema.ts";
 import { issuesWithCode, type WfIssue } from "./issues.ts";
-import { coerceDocument, validateWfJsonValue } from "./analyze.ts";
-import { clone, validDocument, validDocument11, validDocument13 } from "./testFixtures.ts";
-import type { WfArchive, WfJsonDocument, WfTimeEntry } from "./types.ts";
+import { coerceDocument, analyzeMarkdown, validateWfJsonValue } from "./analyze.ts";
+import { clone, validDocument, validDocument11, validDocument13, wfjsonBlockOnly } from "./testFixtures.ts";
+import type { WfArchive, WfJsonDocument, WfTimeEntry, WfWorkflowArchive } from "./types.ts";
 
 /** 直接改文档的某个深层字段，返回问题清单 */
 function check(mutate: (doc: WfJsonDocument) => void): WfIssue[] {
@@ -63,12 +63,33 @@ describe("validateWfJsonValue · 字段级问题", () => {
     assert.equal(found[0].path, "/workflows/0/root/status");
   });
 
-  test("未知字段 → SCHEMA_UNKNOWN_FIELD", () => {
+  test("未知字段 → SCHEMA_UNKNOWN_FIELD（Phase 40：warning，不拦看板）", () => {
     const issues = check((doc) => (rootOf(doc).prority = 3));
     const found = issuesWithCode(issues, "SCHEMA_UNKNOWN_FIELD");
     assert.equal(found.length, 1);
+    assert.equal(found[0].severity, "warning", "未定义字段不再是 error");
     assert.equal(found[0].path, "/workflows/0/root/prority");
     assert.ok(found[0].message.includes("prority"));
+  });
+
+  test("M1.6 文件级 noteKey：可选、10 位十六进制，格式不对才报", () => {
+    assert.deepEqual(check((doc) => (doc.noteKey = "3f9a1c2b7d")), []);
+    assert.deepEqual(validateWfJsonValue(validDocument()), [], "缺省即合法（老数据不需要补）");
+    const bad = check((doc) => (doc.noteKey = "3F9A1C2B7D"));
+    const found = issuesWithCode(bad, "SCHEMA_PATTERN");
+    assert.equal(found.length, 1);
+    assert.equal(found[0].path, "/noteKey");
+  });
+
+  test("Phase 34 节点级 linkDir：可选字符串；缺省合法，非字符串才报", () => {
+    assert.deepEqual(check((doc) => (rootOf(doc).linkDir = "资料/读书计划")), []);
+    assert.deepEqual(check((doc) => (rootOf(doc).linkDir = "")), [], "空串也合法（= 没设置过）");
+    assert.deepEqual(validateWfJsonValue(validDocument()), [], "缺省即合法（老数据不需要补）");
+
+    const bad = check((doc) => Object.assign(rootOf(doc), { linkDir: 42 }));
+    const found = issuesWithCode(bad, "SCHEMA_TYPE");
+    assert.equal(found.length, 1);
+    assert.equal(found[0].path, "/workflows/0/root/linkDir");
   });
 
   test("status 非法取值 → SCHEMA_ENUM", () => {
@@ -94,10 +115,63 @@ describe("validateWfJsonValue · 字段级问题", () => {
     assert.equal(found[0].path, "/workflows/0/root/children");
   });
 
+  /* ---- Phase 20：note / noteVisible（$defs/node 新增的两个选填键） ---- */
+
+  test("note 条目数组 + noteVisible：三态合法值都零问题", () => {
+    assert.equal(check((doc) => (rootOf(doc).note = [{ text: "先截 3 家的定价页" }])).length, 0);
+    assert.equal(
+      check((doc) => (rootOf(doc).note = [{ text: "待办", done: false }, { text: "已办", done: true }])).length,
+      0,
+    );
+    assert.equal(check((doc) => (rootOf(doc).note = [])).length, 0, "空数组本身合法（引擎写回时会顺手删键）");
+    assert.equal(check((doc) => (rootOf(doc).noteVisible = true)).length, 0);
+    assert.equal(check((doc) => (rootOf(doc).noteVisible = false)).length, 0);
+    assert.equal(
+      check((doc) => {
+        rootOf(doc).note = [{ text: "两键同时出现" }];
+        rootOf(doc).noteVisible = true;
+      }).length,
+      0,
+    );
+  });
+
+  test("note 写成字符串 → SCHEMA_TYPE（Phase 20 修订起只认条目数组）", () => {
+    const issues = issuesWithCode(check((doc) => (rootOf(doc).note = "旧格式的多行文本")), "SCHEMA_TYPE");
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].path, "/workflows/0/root/note");
+  });
+
+  test("noteItem：缺 text / text 空串 / done 非布尔 / 多余键各有专属问题码", () => {
+    const missing = issuesWithCode(check((doc) => (rootOf(doc).note = [{}])), "SCHEMA_REQUIRED");
+    assert.equal(missing.length, 1);
+    assert.equal(missing[0].path, "/workflows/0/root/note/0/text", "路径指到缺的键");
+
+    const blank = issuesWithCode(check((doc) => (rootOf(doc).note = [{ text: "" }])), "SCHEMA_LENGTH");
+    assert.equal(blank.length, 1);
+    assert.equal(blank[0].path, "/workflows/0/root/note/0/text");
+
+    const wrongDone = issuesWithCode(check((doc) => (rootOf(doc).note = [{ text: "x", done: "yes" }])), "SCHEMA_TYPE");
+    assert.equal(wrongDone.length, 1);
+    assert.equal(wrongDone[0].path, "/workflows/0/root/note/0/done");
+
+    const extra = issuesWithCode(check((doc) => (rootOf(doc).note = [{ text: "x", kind: "todo" }])), "SCHEMA_UNKNOWN_FIELD");
+    assert.equal(extra.length, 1);
+    assert.equal(extra[0].path, "/workflows/0/root/note/0/kind");
+  });
+
+  test("noteVisible 非布尔 → SCHEMA_TYPE；键名相邻不串味", () => {
+    const wrongType = issuesWithCode(check((doc) => (rootOf(doc).noteVisible = "yes")), "SCHEMA_TYPE");
+    assert.equal(wrongType.length, 1);
+    assert.equal(wrongType[0].path, "/workflows/0/root/noteVisible");
+
+    assert.equal(issuesWithCode(check((doc) => (rootOf(doc).noteVsible = true)), "SCHEMA_UNKNOWN_FIELD").length, 1);
+    assert.equal(issuesWithCode(check((doc) => (rootOf(doc).summary = { note: "x" })), "SCHEMA_TYPE").length, 1);
+  });
+
   test("深层嵌套错误带完整 JSON Pointer", () => {
     const issues = check((doc) => {
       const children = rootOf(doc).children as Record<string, unknown>[];
-      (children[1] as Record<string, unknown>).status = "unknown";
+      children[1].status = "unknown";
     });
     const found = issuesWithCode(issues, "SCHEMA_ENUM");
     assert.equal(found[0].path, "/workflows/0/root/children/1/status");
@@ -140,7 +214,7 @@ describe("validateWfJsonValue · 字段级问题", () => {
     for (let i = 0; i < 200; i += 1) {
       const child = { id: `nd-deep-${i}`, title: `t${i}`, status: "todo", children: [] as unknown[] };
       (cursor.children as unknown[]).push(child);
-      cursor = child as unknown as Record<string, unknown>;
+      cursor = child;
     }
     assert.doesNotThrow(() => validateAgainstSchema(document, WFJSON_SCHEMA));
   });
@@ -268,6 +342,59 @@ describe("schemaValidator · v1.3 新增字段（timeEntries / archive）", () =
 
     assert.ok(codes.includes("SCHEMA_UNKNOWN_FIELD"), "多写的键被拒");
     assert.ok(codes.includes("SCHEMA_REQUIRED"), "缺 date 被拒");
+
+describe("schemaValidator · Phase 22 workflow_archive（文件级台账）", () => {
+  /** 一份合法台账（挂在 1.3 样例上） */
+  const withLedger = (): WfJsonDocument => {
+    const document = clone(validDocument13());
+    document.workflow_archive = [
+      {
+        workflowId: document.workflows[0].id,
+        title: document.workflows[0].title,
+        noteAnchor: "^nd-uuid-001",
+        archive: { workflowId: "wf-uuid-301" },
+      },
+    ];
+    return document;
+  };
+
+  /** 把台账第一条当一个可随便改的对象（测试要往里塞脏数据） */
+  const entryOf = (document: WfJsonDocument): Record<string, unknown> =>
+    document.workflow_archive![0] as unknown as Record<string, unknown>;
+
+  test("合法台账通过；缺省（不写这个键）也通过", () => {
+    assert.deepEqual(validateWfJsonValue(withLedger()), []);
+
+    const absent = withLedger();
+    delete absent.workflow_archive;
+    assert.deepEqual(validateWfJsonValue(absent), []);
+  });
+
+  test("四键必填：缺 noteAnchor / archive 内部缺必填键 → SCHEMA_REQUIRED", () => {
+    const missingAnchor = withLedger();
+    delete entryOf(missingAnchor).noteAnchor;
+    assert.ok(issuesWithCode(validateWfJsonValue(missingAnchor), "SCHEMA_REQUIRED").length > 0);
+
+    const missingArchiveKeys = withLedger();
+    entryOf(missingArchiveKeys).archive = { archivedAt: "2026-10-12 14:30" };
+    assert.ok(issuesWithCode(validateWfJsonValue(missingArchiveKeys), "SCHEMA_REQUIRED").length > 0);
+  });
+
+  test("多余键 / 锚点格式非法 / archive 不是对象 → 逐条报错", () => {
+    const extra = withLedger();
+    entryOf(extra).extra = 1;
+    assert.ok(issuesWithCode(validateWfJsonValue(extra), "SCHEMA_UNKNOWN_FIELD").length > 0);
+
+    const badAnchor = withLedger();
+    entryOf(badAnchor).noteAnchor = "nd-uuid-001";
+    assert.ok(issuesWithCode(validateWfJsonValue(badAnchor), "SCHEMA_PATTERN").length > 0);
+
+    const badArchive = withLedger();
+    entryOf(badArchive).archive = "not-an-object";
+    assert.ok(issuesWithCode(validateWfJsonValue(badArchive), "SCHEMA_TYPE").length > 0);
+  });
+});
+
     assert.ok(codes.includes("SCHEMA_RANGE"), "hours=-1 越界");
     assert.ok(codes.includes("SCHEMA_PATTERN"), "endAt / date 格式非法");
     assert.ok(issues.some((item) => item.path === "/workflows/0/root/timeEntries/0/note"));
@@ -282,45 +409,107 @@ describe("schemaValidator · v1.3 新增字段（timeEntries / archive）", () =
     assert.deepEqual(validateWfJsonValue(document), []);
   });
 
-  test("archive：archivedAt / workflowId / schemaVersion 必填，file 已弃用（v0.7 §⑨-2）", () => {
+  test("archive：只剩 workflowId 必填；多余的键被拒（Phase 39）", () => {
     const document = clone(validDocument13());
-    document.workflows[1].root.archive = { summary: "只有摘要", 额外: 1 } as unknown as WfArchive;
+    document.workflows[1].root.archive = { 额外: 1 } as unknown as WfArchive;
 
     const issues = validateWfJsonValue(document);
     const codes = issues.map((item) => item.code);
 
-    assert.ok(codes.includes("SCHEMA_REQUIRED"), "缺必填字段");
+    assert.ok(codes.includes("SCHEMA_REQUIRED"), "缺 workflowId");
     assert.ok(codes.includes("SCHEMA_UNKNOWN_FIELD"), "多余的键");
-    for (const key of ["archivedAt", "workflowId", "schemaVersion"]) {
-      assert.ok(
-        issues.some((item) => item.path === `/workflows/1/root/archive/${key}`),
-        `缺 ${key} 的路径`,
-      );
-    }
-    // file 不在 required 里：缺了不算错
-    assert.equal(
-      issues.some((item) => item.path === "/workflows/1/root/archive/file" && item.code === "SCHEMA_REQUIRED"),
-      false,
-      "archive.file 已弃用，缺它不该报 SCHEMA_REQUIRED",
+    assert.ok(
+      issues.some((item) => item.path === "/workflows/1/root/archive/workflowId"),
+      "缺 workflowId 的路径",
     );
   });
 
-  test("archive：旧文件里的 file 仍然合法（只读兼容）", () => {
+  test("workflow.archive：三键选填（Phase 45）+ 三段文字 / 标签选填；多余的键被拒", () => {
     const document = clone(validDocument13());
-    document.workflows[1].root.archive = {
+    document.workflows[1].archive = {
       archivedAt: "2026-10-12 14:30",
-      file: "archive/wf-old-nd-old.md",
-      workflowId: "wf-old",
-      schemaVersion: "1.9",
-    } as WfArchive;
+      from_workflow: "立项调查",
+      from_node: "调研竞品",
+      summary: "收敛",
+      tag: ["归档"],
+    };
+    assert.deepEqual(validateWfJsonValue(document), []);
+
+    // Phase 45：普通工作流只写四条复盘说明（不写 archivedAt / from_*）也合法
+    const notesOnly = clone(validDocument13());
+    notesOnly.workflows[1].archive = { summary: "只填概括", tag: ["复盘"] };
+    assert.deepEqual(validateWfJsonValue(notesOnly), []);
+
+    const empty = clone(validDocument13());
+    empty.workflows[1].archive = {};
+    assert.deepEqual(validateWfJsonValue(empty), []);
+
+    const extra = clone(validDocument13());
+    extra.workflows[1].archive = {
+      archivedAt: "2026-10-12 14:30",
+      from_workflow: "立项调查",
+      from_node: "调研竞品",
+      额外: 1,
+    } as unknown as WfWorkflowArchive;
+    assert.ok(issuesWithCode(validateWfJsonValue(extra), "SCHEMA_UNKNOWN_FIELD").length > 0);
+  });
+
+  test("workflow.archive：archivedAt 接受「日期 + 精确到分钟」（空格分隔）", () => {
+    const document = clone(validDocument13());
+    document.workflows[1].archive = {
+      archivedAt: "2026-10-12 14:30",
+      from_workflow: "立项调查",
+      from_node: "调研竞品",
+    };
 
     assert.deepEqual(validateWfJsonValue(document), []);
   });
+});
 
-  test("archive：archivedAt 接受定稿格式「日期 + 精确到分钟」（空格分隔）", () => {
+/* ------------------------------------------------------------------ *
+ * Phase 40：校验语义收窄 —— 「关键字段齐 → 照常产出看板数据」
+ *
+ * 未定义字段（多写 / 拼错 / 旧版遗留）从 error 降为 warning：
+ *  - 以前：`hasErrors(schemaIssues)` → analyze 提前返回，document 不产出 → 视图只摊问题；
+ *  - 现在：warning 不触发提前返回，文档照常收窄，字段名走「统计 → schema警告」。
+ * 反例（缺必填 / 类型错 / 枚举错）必须仍然拦住。
+ * ------------------------------------------------------------------ */
+describe("Phase 40 · 未定义字段只算警告，不阻断看板", () => {
+  test("关键字段齐 + 多一个未定义字段 → 仍产出 document，hasError=false", () => {
     const document = clone(validDocument13());
-    document.workflows[1].root.archive!.archivedAt = "2026-10-12 14:30";
+    rootOf(document).prority = 3;
 
-    assert.deepEqual(validateWfJsonValue(document), []);
+    const result = analyzeMarkdown(wfjsonBlockOnly(document));
+
+    assert.ok(result.document !== undefined, "关键字段齐 → 文档照常收窄（看板能渲染）");
+    assert.equal(result.hasError, false, "未定义字段不该把看板换成错误框");
+    assert.equal(result.counts.error, 0);
+    const unknown = issuesWithCode(result.issues, "SCHEMA_UNKNOWN_FIELD");
+    assert.equal(unknown.length, 1);
+    assert.equal(unknown[0].severity, "warning");
+    assert.equal(unknown[0].path, "/workflows/0/root/prority");
+  });
+
+  test("缺必填字段仍是 error（照样拦住）", () => {
+    const document = clone(validDocument13());
+    delete rootOf(document).title;
+
+    const result = analyzeMarkdown(wfjsonBlockOnly(document));
+
+    assert.equal(result.hasError, true);
+    assert.equal(result.document, undefined, "关键字段不齐 → 不产出文档");
+    assert.ok(issuesWithCode(result.issues, "SCHEMA_REQUIRED").length > 0);
+  });
+
+  test("坏值仍是 error（未定义字段降级不牵连其它检查）", () => {
+    const document = clone(validDocument13());
+    rootOf(document).status = 123;
+
+    const result = analyzeMarkdown(wfjsonBlockOnly(document));
+
+    assert.equal(result.hasError, true);
+    assert.equal(result.document, undefined, "坏值不能进渲染层");
+    const bad = result.issues.filter((item) => item.path === "/workflows/0/root/status");
+    assert.ok(bad.some((item) => item.severity === "error"), "status 坏值必须仍是 error（枚举 / 类型）");
   });
 });

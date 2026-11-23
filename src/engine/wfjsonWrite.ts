@@ -1,13 +1,16 @@
 /**
  * 写回层：`stringifyWfJson` / `buildWfJsonBlock` / `upsertWfJsonBlock`；
  *  - frontmatter 摘要字段：`buildFrontmatterSummary` / `upsertFrontmatterSummary`；
- *  - 节点纪要段落：`sanitizeTitle` / `appendNoteSection` / `ensureNoteSections` / `removeNoteSections`；
- *  - 变更编排的写回：`writeBackDocument`（代码块 + 摘要 + 先删后补纪要段落）。
+ *  - 旧纪要段的清理工具：`sanitizeTitle` / `removeNoteSections`（Phase 27 起不再补段）；
+ *  - 变更编排的写回：`writeBackDocument`（代码块 + 摘要 + 删旧纪要段 + 剥离 `noteAnchor`）。
+ *
+ * Phase 27 弃用说明：`appendNoteSection` / `ensureNoteSections` / `migrateLinksToNoteSections` /
+ * `mergeNoteSectionLinks` 保留导出（旧测试 / 未来兼容），业务代码**不再调用**。
  */
 
-import { anchorForNode, anchorToTarget } from "./ids.ts";
+import { ANCHOR_MARK, anchorForNode, anchorToTarget } from "./ids.ts";
 import { parseFrontmatter } from "./frontmatter.ts";
-import { findBlockAnchors, findCodeFences, findWfJsonBlocks, indexBlockAnchors, replaceBlockContent, splitLines } from "./markdownScan.ts";
+import { findBlockAnchors, findWfJsonBlocks, indexBlockAnchors, replaceBlockContent, splitLines } from "./markdownScan.ts";
 import { aggregateStatus } from "./consistency.ts";
 import {
   NOTE_HEADING_LEVEL,
@@ -16,6 +19,7 @@ import {
   extractNoteLinks,
   findNoteSections,
   getNoteSectionContent,
+  noteIdOf,
   renderNoteLinkLine,
   renderNoteSection,
   wrapNoteSections,
@@ -23,7 +27,7 @@ import {
 } from "./noteSection.ts";
 import { walkNodes } from "./tree.ts";
 import { formatLocalIso, toDateOnly } from "./time.ts";
-import { FRONTMATTER_FIELDS, WFJSON_LANG, type WfJsonDocument, type WfNode } from "./types.ts";
+import { FRONTMATTER_FIELDS, UNCLASSIFIED_WORKFLOW_ID, WFJSON_LANG, type WfJsonDocument, type WfNode } from "./types.ts";
 
 /** wfjson 代码块的序列化缩进（严格 JSON，零注释） */
 const JSON_INDENT = 2;
@@ -103,7 +107,6 @@ export interface WfJsonBlockInfo {
 export function inspectWfJsonBlocks(markdown: string): WfJsonBlockInfo {
   const frontmatter = parseFrontmatter(markdown);
   const blocks = findWfJsonBlocks(markdown, frontmatter);
-  const fences = findCodeFences(markdown, frontmatter);
   return {
     found: blocks.length > 0,
     multiple: blocks.length > 1,
@@ -147,6 +150,12 @@ export interface FrontmatterSummary {
   status: string;
   titles: string[];
   updated: string;
+  /**
+   * Phase 24 M1.6：笔记身份键（`document.noteKey`；缺省 = 不写 `wf-key`）。
+   *
+   * 它不进 `FRONTMATTER_FIELD_NAMES`（不是必须存在的聚合字段），只是「侧车 ↔ 笔记」的凭据。
+   */
+  key?: string;
 }
 
 /**
@@ -166,15 +175,19 @@ export function buildFrontmatterSummary(document: WfJsonDocument, now: Date = ne
   return {
     tags,
     status: aggregateStatus(document),
-    titles: document.workflows.map((workflow) => workflow.title),
+    // Phase 27 M2：未分类伪流不是一条工作流 → 不进 `wf-titles`（它只是节点的容器）
+    titles: document.workflows
+      .filter((workflow) => workflow.id !== UNCLASSIFIED_WORKFLOW_ID)
+      .map((workflow) => workflow.title),
     updated: document.updatedAt !== undefined ? toDateOnly(document.updatedAt) : toDateOnly(formatLocalIso(now)),
+    ...(document.noteKey !== undefined ? { key: document.noteKey } : {}),
   };
 }
 
 /** YAML 标量渲染：含特殊字符时加双引号 */
 export function renderYamlScalar(value: string): string {
   if (value.length === 0) return '""';
-  if (/^[\s]|[\s]$|[,:\[\]{}#&*!|>'"%@`]/.test(value)) return `"${value.replace(/"/g, '\\"')}"`;
+  if (/^\s|\s$|[,:{}#&*!|>'"%@`]|\[|\]/.test(value)) return `"${value.replace(/"/g, '\\"')}"`;
   return value;
 }
 
@@ -210,6 +223,8 @@ export function upsertFrontmatterSummary(
     [FRONTMATTER_FIELDS.status, summary.status],
     [FRONTMATTER_FIELDS.titles, summary.titles],
     [FRONTMATTER_FIELDS.updated, summary.updated],
+    // M1.6：身份键只在文档有 noteKey 时写（老文件没有这一行，写回时自动补）
+    ...(summary.key !== undefined ? [[FRONTMATTER_FIELDS.key, summary.key] as [string, string]] : []),
   ];
   const lines: Record<string, number> = {};
 
@@ -469,26 +484,28 @@ export interface WriteBackOptions extends WriteDocumentOptions, NoteSectionOptio
   now?: Date;
   /** 需要从正文删掉的纪要锚点（删除节点时由 mutator 上报，默认不删） */
   removedNoteAnchors?: readonly string[];
-  /** 删除节点时把源段落的超链接行追加到目标段落（默认不合并） */
+  /**
+   * @deprecated Phase 27：`writeBackNote` 不再合并链接（纪要段范式弃用），字段保留只为兼容旧调用方。
+   */
   mergeNoteSections?: readonly NoteLinkMerge[];
   /**
-   * 是否把旧文件 JSON 里的 `links[]` 迁进正文纪要段（默认 true）。
-   * 迁移后 `node.links` 被删除 → 代码块里不再落盘（deprecate 范式的落地）。
+   * @deprecated Phase 27：`links[]` 不再迁进正文（`migrateLinksToNoteSections` 不再被调用），
+   * 字段保留只为兼容旧调用方（传什么都一样）。
    */
   migrateLinks?: boolean;
 }
 
-/** 只重写笔记（frontmatter 摘要 + 先删后补纪要段落）的结果（v0.7 §⑧ 侧车模式用） */
+/** 只重写笔记（frontmatter 摘要 + 清掉旧纪要段）的结果（v0.7 §⑧ 侧车模式用） */
 export interface WriteNoteBackResult {
   /** 写回后的完整 md 文本（不含 JSON；侧车模式下 JSON 在外置文件里） */
   markdown: string;
   /** frontmatter 动作（创建 / 更新） */
   frontmatter: "created" | "updated";
-  /** 本次新补的纪要锚点（按先序） */
+  /** 本次新补的纪要锚点（Phase 27 起恒为空：不再补纪要段） */
   addedAnchors: string[];
   /** 本次从正文删掉的纪要锚点（按传入顺序） */
   removedAnchors: string[];
-  /** 本次从 `links[]` 迁进正文的节点 id（按先序） */
+  /** 本次从 `links[]` 迁进正文的节点 id（Phase 27 起恒为空：不再迁移） */
   migratedLinkNodeIds: string[];
 }
 
@@ -556,10 +573,17 @@ export function mergeNoteSectionLinks(markdown: string, merges: readonly NoteLin
 }
 
 /**
- * 只重写笔记正文（**不碰 JSON 代码块**）：先删后补纪要段落 + 迁移遗留 `links[]` + frontmatter 摘要。
+ * 只重写笔记正文（**不碰 JSON 代码块**）：清掉旧纪要段 + 剥离 `noteAnchor` + frontmatter 摘要。
  *
- * 侧车模式（v0.7 §⑧）的写回入口：JSON 在 `_wfjson/…/*.wf.json` 里，笔记里只留内容。
- * 顺序与 `writeBackDocument` 的 1~4 步完全一致（合并 → 删除 → 补段 → 迁移），因此旧段落/超链接不会丢。
+ * Phase 27 起这是**唯一的**笔记写回入口，只做三件事（契约 §5.3）：
+ *  1. **删成对纪要段**：只删 `<!-- wf-note:begin:nd-x -->` … `<!-- wf-note:end:nd-x -->`
+ *     这种有机器边界的段（且 id 属于本文档的节点或本次被删的节点）。
+ *     旧格式「标题边界段」**不动** —— 没有机器边界，删了会吃掉用户正文（仓库口径：不做迁移命令）；
+ *  2. **剥离 `noteAnchor`**：`document` 里每个节点 `delete node.noteAnchor`（落盘不再有该键）；
+ *  3. **frontmatter 摘要**：`upsertFrontmatterSummary(...)`（原样，四条归属键绝不覆盖）。
+ *
+ * `ensureNoteSections` / `migrateLinksToNoteSections` / `mergeNoteSectionLinks` 保留导出
+ * （旧测试 / 未来兼容），但**不再被调用**。
  */
 export function writeBackNote(
   markdown: string,
@@ -567,36 +591,38 @@ export function writeBackNote(
   options: WriteBackOptions = {},
 ): WriteNoteBackResult {
   const now = options.now ?? new Date();
-  const migrateLinks = options.migrateLinks !== false;
-  const migrated = migrateLinks
-    ? migrateLinksToNoteSections(markdown, document)
-    : { markdown, migratedNodeIds: [] as string[] };
-  const merged = mergeNoteSectionLinks(migrated.markdown, options.mergeNoteSections ?? []);
-  const removed = removeNoteSections(merged, options.removedNoteAnchors ?? []);
-  const sections = ensureNoteSections(removed.markdown, document, options);
-  const late = migrateLinks
-    ? migrateLinksToNoteSections(sections.markdown, document)
-    : { markdown: sections.markdown, migratedNodeIds: [] as string[] };
-  const frontmatter = upsertFrontmatterSummary(late.markdown, document, now);
+
+  // 1) 删旧纪要段：候选 = 正文里成对段 ∩（本文档节点 ∪ 显式上报的已删节点）
+  const pairedIds = findNoteSections(markdown, parseFrontmatter(markdown)).map((section) => section.nodeId);
+  const candidates = new Set<string>();
+  for (const visit of walkNodes(document)) candidates.add(noteIdOf(visit.node.id));
+  for (const anchor of options.removedNoteAnchors ?? []) candidates.add(noteIdOf(anchor));
+  const doomed = pairedIds.filter((id) => candidates.has(id)).map((id) => `${ANCHOR_MARK}${id}`);
+  const removed = removeNoteSections(markdown, doomed);
+
+  // 2) 剥离 noteAnchor：落盘的 JSON 里不再出现这个键
+  for (const visit of walkNodes(document)) delete visit.node.noteAnchor;
+
+  // 3) frontmatter 摘要
+  const frontmatter = upsertFrontmatterSummary(removed.markdown, document, now);
   return {
     markdown: frontmatter.markdown,
     frontmatter: frontmatter.action,
-    addedAnchors: sections.added,
+    addedAnchors: [],
     removedAnchors: removed.removed,
-    migratedLinkNodeIds: [...migrated.migratedNodeIds, ...late.migratedNodeIds],
+    migratedLinkNodeIds: [],
   };
 }
 
 /**
- * 写回（笔记模式）：`writeBackNote` 的全部步骤 + 最后把 JSON 写回代码块。
+ * 写回（笔记模式）：`writeBackNote` 的三步 + 最后把 JSON 写回代码块。
  *
- * 步骤与顺序固定（每一步都为了不丢数据 / 保持幂等）：
- *  1. 先把遗留 `links[]` 迁进正文（旧段落先补标志），删节点时「合并进上级条目」才有内容可搬；
- *  2. 合并必须在删除之前（源段落这时还在）；
- *  3. 先删掉已消失节点的段落，再按 JSON 补齐缺失段落，因此删父节点时被连带吃掉的子节点段落会被自动补回来；
- *  4. 补出来的新段落再迁一次 `links[]`（首写时节点没有任何段落，第一次迁移会跳过）——
- *     否则代码块已落盘 `links`、下次写回又迁一遍，会产生重复超链接；
- *  5. 最后才写代码块 / 摘要（此时内存文档里的 `links` 已清空，落盘的 JSON 自然不再含它）。
+ * Phase 27 起顺序固定为（每一步都为不丢数据 / 保持幂等）：
+ *  1. 清掉正文里成对的旧纪要段（`<!-- wf-note:begin/end:nd-x -->`），旧格式标题段不动；
+ *  2. 剥离节点上的 `noteAnchor`（落到代码块的 JSON 不再有这个键）；
+ *  3. 更新 frontmatter 摘要（`wf-tags` / `wf-status` / `wf-titles` / `wf-updated`，外加 `wf-key`），
+ *     四条资料归属键（`wf-workflow` / `wf-node` / `wf-workflow-id` / `wf-node-id`）**绝不覆盖**；
+ *  4. 最后才重写 wfjson 代码块。
  */
 export function writeBackDocument(
   markdown: string,

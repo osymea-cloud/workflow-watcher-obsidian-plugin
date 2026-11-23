@@ -16,6 +16,7 @@ import { formatLocalIso } from "./time.ts";
 import type { WfJsonDocument } from "./types.ts";
 import { upgradeDocument } from "./upgrade.ts";
 import { replaceNoteSectionContent } from "./noteSection.ts";
+import { noteKeyFor } from "./sidecar.ts";
 import { stringifyWfJson, writeBackDocument, writeBackNote, type NoteLinkMerge } from "./wfjsonWrite.ts";
 
 /** mutator 的返回（可选）：拒绝写回 / 声明无改动 / 上报受影响节点 */
@@ -155,7 +156,7 @@ export function applyMutation(markdown: string, mutator: DocumentMutator, option
 }
 
 /* ------------------------------------------------------------------ *
- * 侧车模式（v0.7 §⑧：JSON 在 `_wfjson/…/*.wf.json`）
+ * 侧车模式（v0.7 §⑧：JSON 在 `_workflowwatcher/…/*.wf.json`）
  * ------------------------------------------------------------------ */
 
 export interface SidecarMutationOptions extends MutationOptions {
@@ -207,6 +208,8 @@ export function applySidecarMutation(
   const upgrade = upgradeDocument(before.document);
   const document = upgrade.document;
   document.updatedAt = formatLocalIso(now);
+  // M1.6：身份键按**当前路径**重算（复制 / 改名后自愈），同时写进 JSON 与 frontmatter 的 wf-key
+  if (options.file !== undefined) document.noteKey = noteKeyFor(options.file);
 
   // 3) 执行变更
   let outcome: MutationOutcome | undefined;

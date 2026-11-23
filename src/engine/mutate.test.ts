@@ -9,7 +9,7 @@ import { describe, test } from "node:test";
 import { applyMutation, type DocumentMutator } from "./mutate.ts";
 import { applyStatusChange } from "./factory.ts";
 import { findNode } from "./tree.ts";
-import { DOING_ID, TIME_ARCHIVED_AT, validMarkdown, validMarkdown11, validMarkdown13 } from "./testFixtures.ts";
+import { DOING_ID, validMarkdown, validMarkdown11, validMarkdown13 } from "./testFixtures.ts";
 import type { NodeStatus, WfJsonDocument } from "./types.ts";
 
 const NOW = new Date("2026-10-11T10:30:00+08:00");
@@ -70,7 +70,7 @@ describe("mutate · 成功路径", () => {
     assert.equal(result.analysis.hasError, false);
     assert.ok(result.markdown.includes('"schemaVersion": "1.9"'));
     assert.ok(result.markdown.includes('"timeEntries"'));
-    assert.ok(result.markdown.includes(TIME_ARCHIVED_AT));
+    assert.ok(result.markdown.includes('"workflowId": "wf-uuid-101"'), "节点侧 archive 指针保留");
   });
 
   test("mutator 声明 changed=false → 不写回、文本原样", () => {
@@ -95,13 +95,14 @@ describe("mutate · 拒绝路径（失败必须原文返回）", () => {
   });
 
   test("当前文件有 error → 拒绝写入，并指出错误码", () => {
-    const broken = validMarkdown().replace(" ^nd-uuid-003", "");
+    // Phase 27：正文锚点不再参与校验 → 换一个仍然会报 error 的坏数据（重复的 workflow id）
+    const broken = validMarkdown().replace('"id": "wf-uuid-002"', '"id": "wf-uuid-001"');
     const result = applyMutation(broken, completeNode(DOING_ID), { now: NOW });
 
     assert.equal(result.success, false);
     assert.equal(result.markdown, broken);
     assert.match(result.reason ?? "", /拒绝写入/);
-    assert.match(result.reason ?? "", /NOTE_ANCHOR_MISSING_IN_BODY/);
+    assert.match(result.reason ?? "", /DUPLICATE_WORKFLOW_ID/);
   });
 
   test("没有 wfjson 代码块 → 拒绝", () => {

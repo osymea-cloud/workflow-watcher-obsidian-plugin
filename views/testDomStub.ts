@@ -47,6 +47,43 @@ export interface StubMouseEvent {
 }
 
 export type StubHandler = (event: StubMouseEvent) => void;
+/**
+ * 单测专用：给**新造**的、带某个 class 的元素预设 `scrollHeight`。
+ *
+ * 真实浏览器里 `scrollHeight` 由内容高度算出来，桩里没有布局、恒为 0 ——
+ * 「泳道正文滚到底（`scrollTop = scrollHeight`）」这类断言会退化成 0 = 0，
+ * 于是 `.wf-lane-body` 的滚动位置测不出东西。注册过的 class 才生效，
+ * 没注册的一律还是 0（与加这个开关之前一字不差），用例收尾记得 `clearScrollHeightPresets()`。
+ */
+const scrollHeightPresets = new Map<string, number>();
+
+/** 见 `scrollHeightPresets`（Phase 22：泳道滚动位置的回归用例要用） */
+export function presetScrollHeight(cls: string, height: number): void {
+  scrollHeightPresets.set(cls, height);
+}
+
+/** 清掉 `presetScrollHeight()` 注册的预设（用例收尾调用，别影响后面的用例） */
+export function clearScrollHeightPresets(): void {
+  scrollHeightPresets.clear();
+}
+
+/**
+ * 建一个**游离**桩元素（不 append）。
+ *
+ * 两处共用：`StubElement.createEl/createDiv/createSpan`（建完再 append 到接收者）与
+ * 全局 `createDiv()`（Obsidian DOM 增强层的同名全局函数，返回游离元素）。
+ */
+function createStubElement(tagName: string, options: StubElementOptions = {}): StubElement {
+  const el = new StubElement(tagName);
+  if (options.cls !== undefined) el.addClass(...options.cls.split(/\s+/));
+  if (options.text !== undefined) el.setText(options.text);
+  for (const [cls, height] of scrollHeightPresets) {
+    if (el.hasClass(cls)) el.scrollHeight = height;
+  }
+  return el;
+}
+
+
 
 export class StubElement {
   readonly tagName: string;
@@ -63,6 +100,16 @@ export class StubElement {
   open = false;
   /** 按钮的禁用态（Phase 19 M3：没选中 plot 时工具条按钮禁用）；真实 DOM 默认 false */
   disabled = false;
+  /** 只读态（Phase 38：导出清单能选中 / 能复制、不能改）；真实 DOM 默认 false */
+  readOnly = false;
+  /** 文本类控件的当前值（Phase 26：导入 / 导出面板的路径输入框）；真实 DOM 默认空串 */
+  value = "";
+  /** 输入框占位符（Phase 26）；真实 DOM 默认空串 */
+  placeholder = "";
+  /** `input` 事件手柄（Phase 26：桩里由测试赋值 + 手动调用，模拟用户在框里打字） */
+  oninput: (() => void) | null = null;
+  /** `<input type="date">` 选完日期（Phase 28：甘特 / 方块阵的窗口结束日） */
+  onchange: (() => void) | null = null;
   /** `<details>` 的 toggle 手柄：真实 DOM 程序化改 open 会派发事件，桩里由测试手动触发 */
   ontoggle: (() => void) | null = null;
   /** 原生拖拽（Phase 15）：`draggable` 属性 + 五个 `drag*` 手柄（桩里由测试手动触发） */
@@ -90,6 +137,11 @@ export class StubElement {
   scrollLeft = 0;
   scrollWidth = 0;
   clientWidth = 0;
+  /** Phase 25：导航条跳转 / 高亮要用 `offsetLeft` / `offsetWidth`（桩里没有布局，由测试按需赋值） */
+  offsetLeft = 0;
+  offsetWidth = 0;
+  /** 单测专用：记录 `scrollTo()` 的调用参数（真实 DOM 的平滑滚动在桩里不实现动画） */
+  readonly scrollCalls: { left?: number; top?: number; behavior?: string }[] = [];
 
   private readonly classNames = new Set<string>();
 
@@ -113,6 +165,36 @@ export class StubElement {
 
   getAttribute(name: string): string | null {
     return this.attributes[name] ?? null;
+  }
+
+  /** 与真实 DOM 对齐：删属性（Phase 21：开关原位切「关」时摘掉 `data-node-id`） */
+  removeAttribute(name: string): void {
+    delete this.attributes[name];
+    if (name === "class") this.classNames.clear();
+  }
+
+  /**
+   * 与真实 DOM 对齐：`element.dataset` 是映射到 `data-*` 属性的活视图
+   * （`el.dataset.context = "active"` 等价于 `el.setAttribute("data-context", "active")`，
+   *  `getAttribute("data-context")` 能读回同一个值）。camelCase 键 ↔ kebab-case 属性名。
+   * 只实现 get / set / has / delete 四条最常用的 trap（桩用不到枚举 `Object.keys(dataset)`）。
+   */
+  get dataset(): Record<string, string> {
+    const attributes = this.attributes;
+    const toAttr = (key: string): string => "data-" + key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+    const store: Record<string, string> = {};
+    return new Proxy(store, {
+      get: (_target, key: string | symbol): string | undefined => attributes[toAttr(String(key))],
+      set: (_target, key: string | symbol, value: string): boolean => {
+        attributes[toAttr(String(key))] = String(value);
+        return true;
+      },
+      has: (_target, key: string | symbol): boolean => toAttr(String(key)) in attributes,
+      deleteProperty: (_target, key: string | symbol): boolean => {
+        delete attributes[toAttr(String(key))];
+        return true;
+      },
+    });
   }
 
   getBoundingClientRect(): { left: number; top: number; right: number; bottom: number; width: number; height: number } {
@@ -156,7 +238,7 @@ export class StubElement {
   }
 
   /**
-   * 事件监听（Phase 18）：`wfView` 的间隙滚轮与 `emoWidget` 的拖拽 / 缩放都要挂监听。
+   * 事件监听（Phase 18）：`wfView` 的间隙滚轮 / 拖拽都要挂监听。
    * 真实 DOM 的第三个参数（`{ passive: false }`）桩里只记录、不解释；
    * 派发由测试调 `dispatch()`（真实 DOM 没有这个方法，专供单测）。
    */
@@ -180,6 +262,17 @@ export class StubElement {
     const list = this.listeners.get(name) ?? [];
     for (const item of list) item.handler(event);
     return list.length > 0;
+  }
+
+  /**
+   * 真实 DOM 的同名方法（Phase 25：导航条跳转用 `scrollTo({ left, behavior })`）。
+   * 桩里不做平滑动画 —— 直接把 `left` / `top` 落到 `scrollLeft` / `scrollTop`，
+   * 同时把参数记进 `scrollCalls`，用例可以断言「滚到哪」而不依赖动画时序。
+   */
+  scrollTo(options: { left?: number; top?: number; behavior?: string }): void {
+    this.scrollCalls.push({ ...options });
+    if (options.left !== undefined) this.scrollLeft = options.left;
+    if (options.top !== undefined) this.scrollTop = options.top;
   }
 
   /** 单测专用：某类事件的监听数量 / 是否用了 `{ passive: false }` */
@@ -239,28 +332,36 @@ export class StubElement {
   }
 
   createEl(tagName: string, options: StubElementOptions = {}): StubElement {
-    const el = new StubElement(tagName);
-    if (options.cls !== undefined) el.addClass(...options.cls.split(/\s+/));
-    if (options.text !== undefined) el.setText(options.text);
-    this.appendChild(el);
-    return el;
+    return this.make(tagName, options);
   }
 
   createDiv(options: StubElementOptions = {}): StubElement {
-    return this.createEl("div", options);
+    return this.make("div", options);
   }
 
   /** Obsidian 的 `createSpan`（sidebar 的图标位、点表的 x / y 都用它） */
   createSpan(options: StubElementOptions = {}): StubElement {
-    return this.createEl("span", options);
+    return this.make("span", options);
+  }
+
+  /**
+   * `createEl` / `createDiv` / `createSpan` 的共同实现：建元素 + append 到自身。
+   *
+   * 三个公开方法只负责「决定 tagName」，**不要**写成互相调用 —— `createDiv(){ return this.createEl("div") }`
+   * 这种形状会被 `obsidianmd/prefer-create-el` 反向建议成 `this.createDiv(...)`，照改就是无限递归。
+   */
+  private make(tagName: string, options: StubElementOptions): StubElement {
+    const el = createStubElement(tagName, options);
+    this.appendChild(el);
+    return el;
   }
 
   /** 只支持 `.class` 选择器（视图与测试都够用） */
   closest(selector: string): StubElement | null {
-    let cursor: StubElement | null = this;
-    while (cursor !== null) {
-      if (selector.startsWith(".") && cursor.classNames.has(selector.slice(1))) return cursor;
-      cursor = cursor.parent;
+    const matches = (el: StubElement): boolean => selector.startsWith(".") && el.classNames.has(selector.slice(1));
+    if (matches(this)) return this;
+    for (let cursor = this.parent; cursor !== null; cursor = cursor.parent) {
+      if (matches(cursor)) return cursor;
     }
     return null;
   }
@@ -274,6 +375,26 @@ export class StubElement {
     };
     walk(this);
     return found;
+  }
+
+  /**
+   * 真实 DOM 的同名方法（Phase 22：整块重渲染前按类名抄泳道正文的滚动位置）。
+   * 与 `query` 同一套实现，只是签名跟真实 DOM 对齐 —— 视图里写的是标准 `querySelectorAll`。
+   */
+  querySelectorAll(selector: string): StubElement[] {
+    return this.query(selector);
+  }
+
+  /**
+   * 真实 DOM 的同名方法（单数）：第一个**后代**匹配，没有就 `null`。
+   *
+   * Phase 33：导航栏搬进「进行中」块后，首次渲染就会走到 `columnsOf()` 之后的
+   * `element.querySelector(".wf-active-scroll")`（原来那时块还没造出来，走不到这里）。
+   * 桩缺这个方法时视图会抛 `… .querySelector is not a function`（`lint.md` §7.1 第 1 类红灯）。
+   * 与真实 DOM 对齐的细节：**不含自身**（`query` 含），同 `closest` 之外的标准语义。
+   */
+  querySelector(selector: string): StubElement | null {
+    return this.query(selector).find((el) => el !== this) ?? null;
   }
 
   /** 整棵子树的文本（便于 `assert.match`） */
@@ -296,15 +417,50 @@ export function installDomStub(): StubElement {
     body,
     createEl: notAContainer,
     createDiv: notAContainer,
-    /** 游离元素工厂（真实 DOM 的标准 API；视图里的 detachedDiv 走这里） */
+    /** 标准 DOM 工厂（桩内部建游离元素、测试直接造元素都用它；视图的 `detachedDiv()` 走全局 `createDiv()`） */
     createElement: (tagName: string): StubElement => new StubElement(tagName),
     /** SVG 元素工厂（Phase 19 M3：折线 / 圆点 / 刻度都在 SVG 命名空间里建） */
     createElementNS: (_namespace: string, tagName: string): StubElement => new StubElement(tagName),
     addEventListener: (): void => undefined,
   };
-  const globals = globalThis as { document?: unknown; window?: unknown; HTMLElement?: unknown };
+  // 这一句**只能**用 `globalThis`：桩要做的事就是往全局装 `document` / `window` / 定时器 / 全局 `createDiv`，
+  // 而 `window` 正是它的产物（此刻还不存在）。`obsidianmd/no-global-this` 的 `--fix`（换成 `window`）会把桩打断，
+  // 所以这是 `doc/ai_rules/lint.md` §6 基线里唯一被保留的那条 warning。
+  const globals = globalThis as {
+    document?: unknown;
+    window?: unknown;
+    HTMLElement?: unknown;
+    createDiv?: unknown;
+    setTimeout?: (handler: () => void, timeout?: number) => unknown;
+    clearTimeout?: (handle: unknown) => void;
+    setInterval?: (handler: () => void, timeout?: number) => unknown;
+    clearInterval?: (handle: unknown) => void;
+  };
   globals.document = documentStub;
-  globals.window = { innerWidth: 1200, open: (): void => undefined };
+  // `window` 上的定时器：视图按 `obsidianmd/prefer-window-timers` 改成 `window.setTimeout` /
+  // `window.setInterval` 之后，桩里必须同构（Node 里没有真的 window，不同构就直接 undefined 崩）。
+  // 这里直接转发 Node 的全局定时器 —— 是桩的实现本体，不能再写 `window.setTimeout`（自己调自己）。
+  globals.window = {
+    innerWidth: 1200,
+    open: (): void => undefined,
+    setTimeout: globals.setTimeout,
+    clearTimeout: globals.clearTimeout,
+    setInterval: globals.setInterval,
+    clearInterval: globals.clearInterval,
+    /**
+     * Phase 25：导航条的滚动高亮用 rAF 节流。桩里**同步执行**回调 ——
+     * 真实 rAF 是异步的，但用例要断言「滚动后高亮变了」而不想等动画帧，同步等价且更稳。
+     */
+    requestAnimationFrame: (handler: (time: number) => void): number => {
+      handler(0);
+      return 0;
+    },
+  };
+  // Obsidian 的 DOM 增强层**还有一组全局**同名函数：`createDiv()` / `createEl(tag)` / `createSpan()`
+  // —— 它们返回的是**游离**元素（与 `document.createDiv` 的「创建 + append 到 document」
+  // 完全是两回事，后者见上面的 notAContainer）。`views/wfView.ts` 的 `detachedDiv()`
+  // 就靠全局 `createDiv()` 造游离卡片，桩里必须补一个，否则单测里 `createDiv is not defined`。
+  globals.createDiv = (options: StubElementOptions = {}): StubElement => createStubElement("div", options);
   globals.HTMLElement = StubElement;
   return body;
 }

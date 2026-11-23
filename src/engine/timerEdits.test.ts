@@ -43,8 +43,8 @@ describe("timerEdits · startTimerEntry（▶️ 开始这个任务）", () => {
 
     const entries = entriesOf(document, "nd-uuid-002");
     assert.deepEqual(entries, [{ startAt: AT, date: "2026-10-12" }]);
-    assert.equal("endAt" in entries![0], false, "进行中不写 endAt（空值省略）");
-    assert.equal("hours" in entries![0], false, "进行中不写 hours");
+    assert.equal("endAt" in entries[0], false, "进行中不写 endAt（空值省略）");
+    assert.equal("hours" in entries[0], false, "进行中不写 hours");
     assert.equal(findNode(document, "nd-uuid-002")?.updatedAt, AT);
   });
 

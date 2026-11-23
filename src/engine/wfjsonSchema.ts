@@ -20,6 +20,13 @@
  *    但引擎一律忽略、不再写回；
  *  - `estimate` / `tags` / `relations` / `link.reason` 同样保留声明、引擎忽略。
  *
+ * Phase 20 / Phase 22 都是**可选字段**（`node.note` / `noteVisible`、文件级 `workflow_archive`），
+ * 老数据缺省即「没有」，语义与 1.9 完全一致 —— 与 Phase 20 一样**不升 schemaVersion**，
+ * 只扩 Schema 的 `properties` / `$defs`。
+ *
+ * Phase 24 M1.6 同理：文件级 `noteKey`（笔记身份键，10 位十六进制）是可选字段，
+ * 老数据缺省不影响任何语义（侧车文件名里的 `~<key>` 才是权威来源，写回时自愈）。
+ *
  * 字段规范文档：doc/datacontact/data_ixd_v09.md
  */
 
@@ -71,6 +78,14 @@ export const WFJSON_SCHEMA: JsonSchemaObject = {
     },
     id: { ...TEXT, "x-hint": "文件级稳定 id，推荐 file-<uuid>", "x-hint-en": "Stable file-level id; file-<uuid> recommended" },
     updatedAt: { ...TIMESTAMP, "x-hint": "文件最后更新时间，frontmatter 的 wf-updated 取其日期部分", "x-hint-en": "Last update of the file; the frontmatter wf-updated takes its date part" },
+    noteKey: {
+      type: "string",
+      pattern: "^[0-9a-f]{10}$",
+      "x-hint":
+        "Phase 24 M1.6：笔记身份键（10 位十六进制）= 侧车文件名里的 `~<key>`，也写进笔记 frontmatter 的 wf-key。由笔记路径算出，插件每次写回都会按当前路径重算；缺省 = 还没写过这一版",
+      "x-hint-en":
+        "Phase 24 M1.6: note identity key (10 hex chars) — the `~<key>` in the sidecar file name, also written to the frontmatter wf-key. Derived from the note path and refreshed on every write-back; absent = not written yet",
+    },
     workflows: {
       type: "array",
       minItems: 1,
@@ -78,8 +93,78 @@ export const WFJSON_SCHEMA: JsonSchemaObject = {
       "x-hint": "一个文件可承载多个工作流；每个工作流一棵树",
       "x-hint-en": "One file can hold several workflows; each workflow is a single tree",
     },
+    workflow_archive: {
+      type: "array",
+      items: { $ref: "#/$defs/workflowArchiveEntry" },
+      "x-hint":
+        "Phase 22：整条工作流归档的台账（一条工作流一条记录）。只有「归档整个工作流」会写，节点级归档不写；缺省 = 本文没有整条流归档过",
+      "x-hint-en":
+        "Phase 22: ledger of whole-workflow archives (one entry per workflow). Written only by “archive the whole workflow”; node-level archives leave it untouched",
+    },
+    archivedAt: {
+      ...TIMESTAMP,
+      "x-hint":
+        "Phase 28：归档快照的归档时间（只有归档文件会写；归档看板的 21 天窗口默认以它为结束日）",
+      "x-hint-en":
+        "Phase 28: archive time of this snapshot (only archive files carry it; archived boards use it as the default end of the 21-day window)",
+    },
   },
   $defs: {
+    /**
+     * Phase 22：整条工作流归档的一条台账。
+     *
+     * 四个字段都必填：`workflowId` / `title` 认人（哪条流），`noteAnchor` 认位置（本文正文里的浓缩根节点），
+     * `archive` 与根节点的 `archive` 同值（时间 / 归档文件 的 workflowId / 三段文字）。
+     */
+    workflowArchiveEntry: {
+      type: "object",
+      required: ["workflowId", "title", "noteAnchor", "archive"],
+      additionalProperties: false,
+      "x-hint": "整条工作流归档的台账条目（Phase 22）：workflowId / title / noteAnchor / archive 都必填",
+      "x-hint-en": "Whole-workflow archive ledger entry (Phase 22): workflowId / title / noteAnchor / archive are all required",
+      properties: {
+        workflowId: {
+          ...TEXT,
+          "x-hint": "被整体归档的原工作流 id（它仍留在 workflows[] 里，只是根节点变成浓缩节点）",
+          "x-hint-en": "Id of the original workflow that was archived (it stays in workflows[]; only its root became the condensed node)",
+        },
+        title: {
+          ...TEXT,
+          "x-hint": "原工作流标题（浓缩后 workflows[].title 不变，这里留一份快照便于阅读）",
+          "x-hint-en": "Title of the original workflow (a snapshot for readability; workflows[].title does not change)",
+        },
+        noteAnchor: {
+          type: "string",
+          pattern: NOTE_ANCHOR_PATTERN,
+          "x-hint": "浓缩根节点在正文里的纪要锚点（= 根节点的 noteAnchor，形如 ^nd-xxx）",
+          "x-hint-en": "Note anchor of the condensed root inside this note (= the root's noteAnchor, e.g. ^nd-xxx)",
+        },
+        archive: { $ref: "#/$defs/archive" },
+      },
+    },
+    /**
+     * Phase 20：note 卡片里的一条（文字 / 待办）。
+     *
+     * 三态落在 `done` 上：**缺省 = 文字 / false = 待办 / true = 已办**。
+     * `additionalProperties: false` 保证不会有人往里塞 `kind` / `checked` 之类的别名。
+     */
+    noteItem: {
+      type: "object",
+      required: ["text"],
+      additionalProperties: false,
+      properties: {
+        text: {
+          ...TEXT,
+          "x-hint": "Phase 20：note 的一条正文（一行；空串 / 全空白会在写回前被丢弃）",
+          "x-hint-en": "Phase 20: one note line (empty / blank lines are dropped before write-back)",
+        },
+        done: {
+          type: "boolean",
+          "x-hint": "Phase 20：缺省 = 文字；false = 待办；true = 已办",
+          "x-hint-en": "Phase 20: absent = plain text; false = todo; true = done",
+        },
+      },
+    },
     workflow: {
       type: "object",
       required: ["id", "title", "root"],
@@ -114,6 +199,7 @@ export const WFJSON_SCHEMA: JsonSchemaObject = {
           "x-hint": "工作流级进度总量（v1.6：0-999 的整数，缺省 1）",
           "x-hint-en": "Workflow-level progress total (v1.6: integer 0-999, default 1)",
         },
+        archive: { $ref: "#/$defs/workflowArchive" },
         root: { $ref: "#/$defs/node" },
       },
     },
@@ -124,7 +210,33 @@ export const WFJSON_SCHEMA: JsonSchemaObject = {
       properties: {
         id: { ...TEXT, "x-hint": "节点稳定 id，推荐 nd-<uuid>", "x-hint-en": "Stable node id; nd-<uuid> recommended" },
         title: TEXT,
-        summary: TEXT,
+        /**
+         * @deprecated Phase 45 废弃：节点说明文字改为工作流级 `workflow.archive` 的四条复盘说明。
+         * 保留声明只为让旧文件继续通过（引擎忽略、不再写回；卡片不再展示）。
+         */
+        summary: {
+          ...TEXT,
+          "x-hint": "已弃用（Phase 45）：节点概要；引擎读时忽略、不再写回，说明改填工作流的 archive 四条说明",
+          "x-hint-en":
+            "Deprecated (Phase 45): node summary; ignored when reading and no longer written back — use the workflow archive notes instead",
+        },
+        /**
+         * Phase 20：note 卡片的条目集合（文字 / 待办，每条一行）。
+         * 与正文纪要段的 `noteAnchor` 无关；空数组会连同 `noteVisible` 一起被删键。
+         */
+        note: {
+          type: "array",
+          items: { $ref: "#/$defs/noteItem" },
+          "x-hint": "Phase 20：note 卡片的条目集合（每条一行；done 缺省 = 文字 / false = 待办 / true = 已办）",
+          "x-hint-en":
+            "Phase 20: note card items (one per line; done absent = text / false = todo / true = done)",
+        },
+        /** Phase 20：note 卡片是否显示（缺省 false = OFF；OFF 时不写该键，文本仍保留） */
+        noteVisible: {
+          type: "boolean",
+          "x-hint": "Phase 20：note 卡片是否显示（缺省 false = OFF）",
+          "x-hint-en": "Phase 20: show the note card (default false = OFF)",
+        },
         type: { type: "string", "x-hint": "节点类型：决策 / 调查 / 执行 / 验证 / 资料 …（自由字符串）", "x-hint-en": "Node type: decision / research / execution / verification / reference … (free-form string)" },
         status: { enum: [...NODE_STATUSES] },
         importance: {
@@ -211,6 +323,18 @@ export const WFJSON_SCHEMA: JsonSchemaObject = {
         },
         archive: { $ref: "#/$defs/archive" },
         aiContext: TEXT,
+        /**
+         * Phase 34：新建链接文档的默认目录（vault 相对路径；缺省 / 空串 = 没设置过）。
+         *
+         * 与四个 `wf-*` frontmatter 键无关（那些在资料文件上）；这里只是「下次新建放哪」的偏好，
+         * 新建子节点时由引擎继承父节点的值。可选字段 → 不升 schemaVersion。
+         */
+        linkDir: {
+          type: "string",
+          "x-hint": "新建链接文档的默认目录（vault 相对路径；缺省 / 空串 = 没设置过，回落第一份已匹配文档的目录或库根）",
+          "x-hint-en":
+            "Default folder for new link docs (vault-relative; missing / empty = not set, falls back to the first matched doc's folder or the vault root)",
+        },
       },
     },
     link: {
@@ -271,44 +395,69 @@ export const WFJSON_SCHEMA: JsonSchemaObject = {
       },
     },
     /**
-     * v1.3：浓缩归档标记（**Phase 4 定稿结构**；v0.7 §⑨-2 起 `file` 弃用）。
+     * v1.3：浓缩归档标记（**Phase 39 定稿：只剩一个指针**）。
      *
-     * 仅 `status=done` 的「浓缩节点」带此键；归档地址改存正文纪要段的
-     * `归档：[[archive/<workflowId>-<nodeId>.md]]` 行（`file` 只读兼容旧文件，
-     * 因此**不在 required 里**；`additionalProperties: false` 仍保留声明）。
+     * 挂在原文档的浓缩节点（`status=done`）上，指向归档文件里的 `workflow.id`。
+     * 三段文字 / 归档时间 / 来源（原工作流名 + 原节点名）都在归档文件自己的
+     * `workflow.archive`（见 `$defs.workflowArchive`）。
      */
     archive: {
       type: "object",
-      required: ["archivedAt", "workflowId", "schemaVersion"],
+      required: ["workflowId"],
       additionalProperties: false,
       "x-hint":
-        "浓缩归档标记（v1.3，Phase 4 定稿）：archivedAt / workflowId / schemaVersion 必填，summary / idea / review 选填；file 已弃用（只读兼容）",
+        "浓缩归档标记（v1.3，Phase 39 定稿）：只有 workflowId（= 归档文件里的 workflow.id）；说明文字在归档文件自己的 workflow.archive 上",
       "x-hint-en":
-        "Condensed archive marker (v1.3, Phase 4): archivedAt / workflowId / schemaVersion required, summary / idea / review optional; file is deprecated (read-only compatibility)",
+        "Condensed archive marker (v1.3, Phase 39): only workflowId (= the workflow.id inside the archive file); the notes live in that file's own workflow.archive",
       properties: {
-        summary: { ...TEXT, "x-hint": "概括（归档表单选填）", "x-hint-en": "Summary (optional in the archive form)" },
-        idea: { ...TEXT, "x-hint": "底层原理 / 启发（归档表单选填）", "x-hint-en": "Underlying principle / insight (optional in the archive form)" },
-        review: { ...TEXT, "x-hint": "怎么提高效率 / 接下来做什么（归档表单选填）", "x-hint-en": "How to be faster / what comes next (optional in the archive form)" },
+        workflowId: {
+          ...TEXT,
+          "x-hint": "归档文件里的 workflow id（视图「打开归档看板」/ 幂等认领靠它在 archive/ 里定位那份 .wf.json）",
+          "x-hint-en":
+            "Workflow id inside the archive file (used by “Open archived board” and idempotent retries to locate that .wf.json under archive/)",
+        },
+      },
+    },
+    /**
+     * Phase 39：归档元数据（`workflow.archive`）。
+     *
+     * Phase 45：三个事实键（`archivedAt` / `from_workflow` / `from_node`）改为**选填** ——
+     * 「修改工作流」弹窗允许任意工作流只写 summary / idea / review / tag 四条复盘说明。
+     * 归档文件仍会写全三个事实键；普通工作流填说明时一个都不写。
+     */
+    workflowArchive: {
+      type: "object",
+      additionalProperties: false,
+      "x-hint":
+        "归档元数据（Phase 39/45）：archivedAt / from_workflow / from_node 只在真归档时写；summary / idea / review / tag 任意工作流都可选填",
+      "x-hint-en":
+        "Archive metadata (Phase 39/45): archivedAt / from_workflow / from_node only on real archives; summary / idea / review / tag are optional on any workflow",
+      properties: {
         archivedAt: {
           ...TIMESTAMP,
           "x-hint": "归档时间（日期 + 精确到分钟，如 2026-10-12 14:30）",
           "x-hint-en": "Archive time (date + minutes, e.g. 2026-10-12 14:30)",
         },
-        file: {
+        from_workflow: {
           ...TEXT,
-          "x-hint":
-            "@deprecated v0.7 §⑨-2：归档时不再写入；地址改存纪要段的「归档：[[...]]」行。保留声明只为读旧文件",
-          "x-hint-en":
-            "@deprecated v0.7: no longer written when archiving; the location now lives in the \"Archive: [[...]]\" line of the note section. Declared only for reading old files",
+          "x-hint": "来源工作流标题（归档发生的那条流）",
+          "x-hint-en": "Source workflow title (the workflow the archive was taken from)",
         },
-        workflowId: {
+        from_node: {
           ...TEXT,
-          "x-hint":
-            "归档 md 里的 workflow id，与归档 md 侧 workflow.originId（= 本浓缩节点 id）双向引用",
-          "x-hint-en":
-            "Workflow id inside the archive md; cross-referenced by that file's workflow.originId (= this condensed node's id)",
+          "x-hint": "来源节点标题（被浓缩的节点 / 整条流归档时的根节点）",
+          "x-hint-en": "Source node title (the condensed node / the root when a whole workflow was archived)",
         },
-        schemaVersion: { ...TEXT, "x-hint": "归档 md 写入时的 schemaVersion（当前 \"1.9\"）", "x-hint-en": "schemaVersion written into the archive md (currently \"1.9\")" },
+        summary: { ...TEXT, "x-hint": "概括（归档表单选填）", "x-hint-en": "Summary (optional in the archive form)" },
+        idea: { ...TEXT, "x-hint": "底层原理 / 启发（归档表单选填）", "x-hint-en": "Underlying principle / insight (optional in the archive form)" },
+        review: { ...TEXT, "x-hint": "怎么提高效率 / 接下来做什么（归档表单选填）", "x-hint-en": "How to be faster / what comes next (optional in the archive form)" },
+        tag: {
+          type: "array",
+          items: TEXT,
+          uniqueItems: true,
+          "x-hint": "归档标签（Phase 39：枚举来自 archive_tag.yaml，可多选）",
+          "x-hint-en": "Archive tags (Phase 39: enumerated in archive_tag.yaml, multi-select)",
+        },
       },
     },
   },

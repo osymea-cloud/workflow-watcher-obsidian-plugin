@@ -94,7 +94,7 @@ export function kindLabel(kind: PlotDocument["kind"]): string {
   return t(`widget.plot.kind.${kind}`);
 }
 
-/** x 的输入提示（`YYYY-MM-DD` / `1, 2, 3…`） */
+/** x 的输入提示（如 2026-01-01 / 1、2、3） */
 export function kindHint(kind: PlotDocument["kind"]): string {
   return t(`widget.plot.kind.${kind}Hint`);
 }
@@ -229,7 +229,7 @@ export async function readPlot(host: PlotHost, info: PlotFileInfo): Promise<Plot
   const handle = info.file ?? handleAt(host, info.path);
   if (asFile(handle) === undefined) return undefined;
   try {
-    const text = await host.app.vault.read(handle as unknown as Parameters<typeof host.app.vault.read>[0]);
+    const text = await host.app.vault.read(handle as Parameters<typeof host.app.vault.read>[0]);
     return validatePlot(JSON.parse(text) as unknown, info.id);
   } catch {
     return undefined;
@@ -325,7 +325,7 @@ export function pointPixel(entry: { x: number; y: number }, scale: PlotScale): {
  */
 export function renderChart(container: HTMLElement, plot: PlotDocument): void {
   const scale = computeScale(plot.kind, plot.points);
-  const svg = svgElement(container as unknown as Element, "svg", {
+  const svg = svgElement(container, "svg", {
     cls: "wf-plot-svg",
     viewBox: `0 0 ${PLOT_VIEW_WIDTH} ${PLOT_VIEW_HEIGHT}`,
     role: "img",
@@ -624,8 +624,7 @@ export function renderPlot(body: HTMLElement, host: PlotHost, refresh: () => voi
     const searchInput = searchBar.createEl("input", { cls: "wf-plot-input wf-plot-search-input" });
     searchInput.setAttribute("placeholder", t("widget.plot.searchPlaceholder"));
     searchInput.setAttribute("aria-label", t("widget.plot.search"));
-    const input = searchInput as unknown as HTMLInputElement;
-    input.value = searchText;
+    searchInput.value = searchText;
     const searchButton = searchBar.createEl("button", { cls: "wf-plot-btn", text: t("widget.plot.search") });
     const clearButton = searchBar.createEl("button", { cls: "wf-plot-btn", text: t("widget.plot.clearSearch") });
     const searchInfo = searchBar.createDiv({ cls: "wf-plot-search-info" });
@@ -670,7 +669,7 @@ export function renderPlot(body: HTMLElement, host: PlotHost, refresh: () => voi
 
     /** 应用搜索框：空 = 全部；非法 = 提示并**保持上一次的过滤结果** */
     const applySearch = (): void => {
-      const text = (input.value ?? "").trim();
+      const text = (searchInput.value ?? "").trim();
       if (text.length === 0) {
         searchText = "";
         renderRows();
@@ -687,7 +686,7 @@ export function renderPlot(body: HTMLElement, host: PlotHost, refresh: () => voi
 
     searchButton.onclick = applySearch;
     clearButton.onclick = () => {
-      input.value = "";
+      searchInput.value = "";
       searchText = "";
       renderRows();
     };
@@ -705,7 +704,7 @@ export function renderPlot(body: HTMLElement, host: PlotHost, refresh: () => voi
     const xInput = add.createEl("input", { cls: "wf-plot-input wf-plot-input--x" });
     xInput.setAttribute("placeholder", kindHint(plot.kind));
     // 补充契约⑥d：date 类预填今天；sequence 留空（占位符仍是格式提示）
-    (xInput as unknown as HTMLInputElement).value = plot.kind === "date" ? formatLocalDate() : "";
+    xInput.value = plot.kind === "date" ? formatLocalDate() : "";
     const yInput = add.createEl("input", { cls: "wf-plot-input wf-plot-input--y" });
     yInput.setAttribute("placeholder", plot.unit.length > 0 ? `y (${plot.unit})` : "y");
     const addButton = add.createEl("button", {
@@ -737,13 +736,21 @@ export function renderPlot(body: HTMLElement, host: PlotHost, refresh: () => voi
   };
 
 
-  /** 重扫目录（写完盘 / 首次打开都走这里）；单份文件坏了只提示，不影响其它 plot */
+  /**
+   * 重扫目录（写完盘 / 首次打开都走这里）；单份文件坏了只提示，不影响其它 plot。
+   *
+   * 并行读：每份 plot 都是独立的 `vault.read + JSON.parse`，串行 `await` 会让首帧延迟
+   * 按文件数线性累加（打开弹窗要等全部读完才 `paint`）。`Promise.all` 一次性发出去，
+   * 顺序由末尾的 `sort` 决定，与读完的先后无关；坏文件仍按各自路径单独提示。
+   */
   const load = async (): Promise<void> => {
+    const files = plotFiles(host);
+    const results = await Promise.all(files.map((info) => readPlot(host, info)));
     const next: PlotDocument[] = [];
-    for (const info of plotFiles(host)) {
-      const result = await readPlot(host, info);
+    for (let index = 0; index < results.length; index += 1) {
+      const result = results[index];
       if (result === undefined || result.plot === undefined) {
-        host.notify(t("widget.plot.readFailed", { path: info.path }));
+        host.notify(t("widget.plot.readFailed", { path: files[index].path }));
         continue;
       }
       next.push(result.plot);

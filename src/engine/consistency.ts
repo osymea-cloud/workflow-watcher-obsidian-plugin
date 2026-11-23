@@ -25,14 +25,14 @@ import { ANCHOR_MARK, anchorForNode, ID_KIND_LABELS, ID_PATTERN, ID_PREFIX, idKi
 import type { FrontmatterInfo } from "./frontmatter.ts";
 import type { BlockAnchorRef } from "./markdownScan.ts";
 import { checkNoteMarkers } from "./noteSection.ts";
-import { flattenNodes, indexIds, walkWorkflow } from "./tree.ts";
+import { flattenSubtree, indexIds, walkWorkflow } from "./tree.ts";
 import {
   FRONTMATTER_FIELDS,
   FRONTMATTER_FIELD_NAMES,
   isNodeStatus,
   PROGRESS_MAX,
   PROGRESS_MIN,
-  STATUS_LABELS,
+  UNCLASSIFIED_WORKFLOW_ID,
   type NodeStatus,
   type WfJsonDocument,
   type WfNode,
@@ -46,6 +46,11 @@ export interface ConsistencyInput {
   document: WfJsonDocument;
   /** 正文锚点索引：anchor（含 ^）→ 出现位置 */
   anchors: Map<string, BlockAnchorRef[]>;
+  /**
+   * 是否检查 frontmatter 摘要字段（默认 true）。
+   * 纯 `.wf.json` 看板（Phase 28 的归档看板）没有笔记 / frontmatter → 传 false。
+   */
+  checkFrontmatter?: boolean;
 }
 
 /** 遍历所有节点，回调带 JSON Pointer 与所属工作流序号 */
@@ -93,18 +98,22 @@ function checkIdFormat(id: string, expected: IdKind, pointer: string, issues: Wf
 /** 一致性检查主入口 */
 export function checkConsistency(input: ConsistencyInput): WfIssue[] {
   const issues: WfIssue[] = [];
-  const { document, anchors } = input;
 
-  checkIds(document, issues);
-  checkNoteAnchors(document, anchors, issues);
-  checkOrphanAnchors(document, anchors, issues);
-  checkNoteSections(input, issues);
-  checkStatusAndTime(document, issues);
-  checkTimeEntries(document, issues);
-  checkFrontmatterSummary(input, issues);
+  checkIds(input.document, issues);
+  checkStatusAndTime(input.document, issues);
+  checkTimeEntries(input.document, issues);
+  if (input.checkFrontmatter !== false) checkFrontmatterSummary(input, issues);
 
   return issues;
 }
+
+/* ------------------------------------------------------------------ *
+ * Phase 27：以下三组「纪要段 / 锚点」检查**不再执行**（函数体留作历史）。
+ *
+ * 纪要段范式已弃用 —— 资料文件改用反向 YAML 归属（`linkAffiliation.ts`），
+ * `NOTE_ANCHOR_*` / `NOTE_SECTION_*` / `ORPHAN_BLOCK_ANCHOR` 三个码也保留声明
+ * （旧数据仍可能带），但不再产生新问题。
+ * ------------------------------------------------------------------ */
 
 /* ---- 正文纪要段标志对（Phase 9） ---- */
 
@@ -115,7 +124,11 @@ const NOTE_MARKER_CODES = {
   mismatch: "NOTE_SECTION_ID_MISMATCH",
 } as const;
 
-function checkNoteSections(input: ConsistencyInput, issues: WfIssue[]): void {
+/**
+ * @deprecated Phase 27：正文纪要段范式已弃用 —— 本函数**不再**被 `checkConsistency` 调用。
+ * 留作历史 / 旧数据的手工体检（单测仍可直接调用）。
+ */
+export function checkNoteSections(input: ConsistencyInput, issues: WfIssue[]): void {
   for (const problem of checkNoteMarkers(input.markdown, input.frontmatter)) {
     issues.push(issue(NOTE_MARKER_CODES[problem.kind], problem.message, { line: problem.line }));
   }
@@ -153,7 +166,11 @@ function checkIds(document: WfJsonDocument, issues: WfIssue[]): void {
 
 /* ---- 2. noteAnchor ↔ 正文锚点 ---- */
 
-function checkNoteAnchors(
+/**
+ * @deprecated Phase 27：纪要段 / `noteAnchor` 已弃用 —— 本函数**不再**被 `checkConsistency` 调用。
+ * `NOTE_ANCHOR_*` 三个码仍保留声明（旧数据可能仍带），只是不再产生新问题。
+ */
+export function checkNoteAnchors(
   document: WfJsonDocument,
   anchors: Map<string, BlockAnchorRef[]>,
   issues: WfIssue[],
@@ -219,8 +236,11 @@ function checkNoteAnchors(
   });
 }
 
-/** 正文里带 ^nd- 前缀但没有任何节点引用的锚点（多为删除节点后的残留） */
-function checkOrphanAnchors(
+/** 正文里带 ^nd- 前缀但没有任何节点引用的锚点（多为删除节点后的残留）
+ *
+ * @deprecated Phase 27：同 `checkNoteAnchors` —— 不再被 `checkConsistency` 调用。
+ */
+export function checkOrphanAnchors(
   document: WfJsonDocument,
   anchors: Map<string, BlockAnchorRef[]>,
   issues: WfIssue[],
@@ -478,10 +498,19 @@ export function aggregateNodeStatus(nodes: readonly WfNode[]): NodeStatus {
  *  - `state` 缺省（进行中）→ 该 workflow 全部节点的单步聚合；
  *  - `state = archived`     → `done`；
  *  - `state = cancelled`    → `cancelled`。
+ *
+ * Phase 27 M2：未分类伪流（`UNCLASSIFIED_WORKFLOW_ID`）的隐藏 root 只是容器 ——
+ * 只聚合 `root.children`；一个未分类节点都没有时贡献 `done`（合并优先级最低 = 中性，
+ * 不会因为「空容器」把整份文件的 `wf-status` 拉成 todo）。
  */
 export function workflowContribution(workflow: WfWorkflow): NodeStatus {
   if (workflow.state === "archived") return "done";
   if (workflow.state === "cancelled") return "cancelled";
+  if (workflow.id === UNCLASSIFIED_WORKFLOW_ID) {
+    const children = Array.isArray(workflow.root.children) ? workflow.root.children : [];
+    if (children.length === 0) return "done";
+    return aggregateNodeStatus(flattenSubtree(children, workflow, workflow.root, [workflow.root]));
+  }
   return aggregateNodeStatus(walkWorkflow(workflow).map((visit) => visit.node));
 }
 
@@ -573,6 +602,22 @@ function checkFrontmatterSummary(input: ConsistencyInput, issues: WfIssue[]): vo
           { value: updated, expected: toDateOnly(document.updatedAt) },
         ),
         { line: fieldLine(frontmatter, FRONTMATTER_FIELDS.updated, fallbackLine) },
+      ),
+    );
+  }
+
+  // M1.6：`wf-key` 与 JSON 的 `noteKey` 互为凭据（任一方缺省都不算错：老文件还没写过这一版）
+  const noteKey = frontmatter.getString(FRONTMATTER_FIELDS.key);
+  if (noteKey !== undefined && document.noteKey !== undefined && noteKey !== document.noteKey) {
+    issues.push(
+      issue(
+        "FRONTMATTER_KEY_MISMATCH",
+        issueMsg(
+          "frontmatterKeyMismatch",
+          `wf-key=${noteKey} 与 wfjson 的 noteKey=${document.noteKey} 不一致（侧车是按笔记路径找的，抄别人的侧车会出现这种情况）`,
+          { value: noteKey, expected: document.noteKey },
+        ),
+        { line: fieldLine(frontmatter, FRONTMATTER_FIELDS.key, fallbackLine) },
       ),
     );
   }

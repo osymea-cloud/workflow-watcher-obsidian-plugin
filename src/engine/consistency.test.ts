@@ -15,7 +15,6 @@ import { parseFrontmatter } from "./frontmatter.ts";
 import { findBlockAnchors, indexBlockAnchors } from "./markdownScan.ts";
 import { flattenNodes } from "./tree.ts";
 import {
-  CHILD_ID,
   DOING_ID,
   ROOT_ID,
   TIME_ROOT_START,
@@ -33,6 +32,7 @@ import {
   wfjsonBlockOnly,
 } from "./testFixtures.ts";
 import type { WfJsonDocument, WfNode, WfRelation, WfStatusEvent, WfTimeEntry } from "./types.ts";
+import { upsertFrontmatterSummary } from "./wfjsonWrite.ts";
 
 /** 跑完整管线并返回问题清单 */
 function run(markdown: string): WfIssue[] {
@@ -115,64 +115,41 @@ describe("consistency · id 约定与重复", () => {
   });
 });
 
-describe("consistency · noteAnchor ↔ 正文锚点", () => {
-  test("正文缺锚点 → NOTE_ANCHOR_MISSING_IN_BODY", () => {
-    const markdown = withDocument(
+describe("consistency · noteAnchor ↔ 正文锚点（Phase 27 已弃用）", () => {
+  test("正文缺锚点 / 锚点重复都不再报问题", () => {
+    // 旧格式：标题行带 `^id` 锚点 —— Phase 27 起正文不再绑定节点，这些都只是普通文字
+    const missing = withDocument(
       () => undefined,
       (text) => text.replace(" ^nd-uuid-003", ""),
     );
-    const found = issuesWithCode(run(markdown), "NOTE_ANCHOR_MISSING_IN_BODY");
-    assert.equal(found.length, 1);
-    assert.ok(found[0].message.includes("nd-uuid-003"));
-    assert.equal(found[0].path, "/workflows/0/root/children/1/noteAnchor");
-  });
+    assert.deepEqual(issuesWithCode(run(missing), "NOTE_ANCHOR_MISSING_IN_BODY"), []);
 
-  test("正文锚点重复 → NOTE_ANCHOR_DUPLICATED_IN_BODY（带行号）", () => {
-    const markdown = withDocument(
+    const duplicated = withDocument(
       () => undefined,
       (text) => `${text.replace(/\n```wfjson/, "\n### 重复段落 ^nd-uuid-003\n\n```wfjson")}`,
     );
-    const found = issuesWithCode(run(markdown), "NOTE_ANCHOR_DUPLICATED_IN_BODY");
-    assert.equal(found.length, 1);
-    assert.ok((found[0].line ?? 0) > 0);
+    assert.deepEqual(issuesWithCode(run(duplicated), "NOTE_ANCHOR_DUPLICATED_IN_BODY"), []);
   });
 
-  test("锚点没挂在标题行上 → NOTE_ANCHOR_NOT_ON_HEADING", () => {
-    const markdown = withDocument(
-      () => undefined,
-      (text) =>
-        text
-          .replace("## 方案初稿 ^nd-uuid-004", "## 方案初稿")
-          .replace("\n```wfjson", "\n段落文字 ^nd-uuid-004\n\n```wfjson"),
-    );
-    const found = issuesWithCode(run(markdown), "NOTE_ANCHOR_NOT_ON_HEADING");
-    assert.equal(found.length, 1);
-    assert.equal(found[0].severity, "warning");
-  });
-
-  test("noteAnchor 与节点 id 不一致 → NOTE_ANCHOR_NOT_MATCHING_ID", () => {
-    // 正文锚点仍是 ^nd-uuid-004，但节点 id 被改成了 nd-uuid-006
-    const issues = run(withDocument((doc) => (doc.workflows[1].root.id = "nd-uuid-006")));
-    const found = issuesWithCode(issues, "NOTE_ANCHOR_NOT_MATCHING_ID");
-    assert.equal(found.length, 1);
-    assert.equal(found[0].severity, "warning");
-    assert.ok(found[0].message.includes("^nd-uuid-004"));
-    assert.equal(issuesWithCode(issues, "NOTE_ANCHOR_MISSING_IN_BODY").length, 0);
-    assert.equal(issuesWithCode(issues, "ORPHAN_BLOCK_ANCHOR").length, 0);
-  });
-
-  test("正文残留锚点 → ORPHAN_BLOCK_ANCHOR", () => {
-    const markdown = withDocument(
+  test("残留锚点 / 不规范锚点 / 锚点与 id 不符都不再报问题", () => {
+    const orphan = withDocument(
       () => undefined,
       (text) => text.replace("\n```wfjson", "\n### 残留段落 ^nd-uuid-777\n\n```wfjson"),
     );
-    const found = issuesWithCode(run(markdown), "ORPHAN_BLOCK_ANCHOR");
-    assert.equal(found.length, 1);
-    assert.ok(found[0].message.includes("^nd-uuid-777"));
+    assert.deepEqual(issuesWithCode(run(orphan), "ORPHAN_BLOCK_ANCHOR"), []);
+
+    const notOnHeading = withDocument(
+      () => undefined,
+      (text) =>
+        text.replace("## 方案初稿 ^nd-uuid-004", "## 方案初稿").replace("\n```wfjson", "\n段落文字 ^nd-uuid-004\n\n```wfjson"),
+    );
+    assert.deepEqual(issuesWithCode(run(notOnHeading), "NOTE_ANCHOR_NOT_ON_HEADING"), []);
+
+    const mismatched = run(withDocument((doc) => (doc.workflows[1].root.id = "nd-uuid-006")));
+    assert.deepEqual(issuesWithCode(mismatched, "NOTE_ANCHOR_NOT_MATCHING_ID"), []);
   });
 
-  test("wfjson 代码块内的锚点文本不会被当成正文锚点", () => {
-    // 代码块内出现 ^nd-uuid-999 文本（JSON 字符串里），不应被算作正文锚点
+  test("wfjson 代码块里的 `^id` 文本更不会被当成锚点", () => {
     const markdown = withDocument((doc) => (rootOf(doc).title = "调研竞品 ^nd-uuid-999"));
     assert.equal(issuesWithCode(run(markdown), "ORPHAN_BLOCK_ANCHOR").length, 0);
   });
@@ -291,24 +268,20 @@ describe("consistency · links（Phase 9 已弃用）", () => {
   });
 });
 
-describe("consistency · 正文纪要段标志（Phase 9）", () => {
+describe("consistency · 正文纪要段标志（Phase 27 已弃用）", () => {
   const appendLines = (lines: string[]) => (markdown: string) => `${markdown}${lines.join("\n")}\n`;
 
-  test("只有开始标志 → NOTE_SECTION_UNPAIRED（error，带行号）", () => {
-    const issues = run(withDocument(() => undefined, appendLines(["<!-- wf-note:begin:nd-uuid-003 -->"])));
-    const found = issuesWithCode(issues, "NOTE_SECTION_UNPAIRED");
-    assert.equal(found.length, 1);
-    assert.equal(found[0].severity, "error");
-    assert.ok((found[0].line ?? 0) > 0);
+  test("只有开始 / 只有结束标志都不再报问题", () => {
+    // 老文件里残留的 `<!-- wf-note:begin:… -->` 只是普通文本，不再是结构约定
+    const beginOnly = run(withDocument(() => undefined, appendLines(["<!-- wf-note:begin:nd-uuid-003 -->"])));
+    assert.deepEqual(issuesWithCode(beginOnly, "NOTE_SECTION_UNPAIRED"), []);
+
+    const endOnly = run(withDocument(() => undefined, appendLines(["<!-- wf-note:end:nd-uuid-003 -->"])));
+    assert.deepEqual(issuesWithCode(endOnly, "NOTE_SECTION_UNPAIRED"), []);
   });
 
-  test("只有结束标志 → NOTE_SECTION_UNPAIRED", () => {
-    const issues = run(withDocument(() => undefined, appendLines(["<!-- wf-note:end:nd-uuid-003 -->"])));
-    assert.equal(issuesWithCode(issues, "NOTE_SECTION_UNPAIRED").length, 1);
-  });
-
-  test("标志嵌套 → NOTE_SECTION_NESTED", () => {
-    const issues = run(
+  test("标志嵌套 / id 不一致 / 成对标志都不再报问题", () => {
+    const nested = run(
       withDocument(
         () => undefined,
         appendLines([
@@ -318,29 +291,23 @@ describe("consistency · 正文纪要段标志（Phase 9）", () => {
         ]),
       ),
     );
-    assert.equal(issuesWithCode(issues, "NOTE_SECTION_NESTED").length, 1);
-  });
+    assert.deepEqual(issuesWithCode(nested, "NOTE_SECTION_NESTED"), []);
 
-  test("begin / end 的 id 不一致 → NOTE_SECTION_ID_MISMATCH", () => {
-    const issues = run(
+    const mismatched = run(
       withDocument(
         () => undefined,
         appendLines(["<!-- wf-note:begin:nd-uuid-003 -->", "<!-- wf-note:end:nd-uuid-002 -->"]),
       ),
     );
-    assert.equal(issuesWithCode(issues, "NOTE_SECTION_ID_MISMATCH").length, 1);
-  });
+    assert.deepEqual(issuesWithCode(mismatched, "NOTE_SECTION_ID_MISMATCH"), []);
 
-  test("成对标志不产生问题", () => {
-    const issues = run(
+    const paired = run(
       withDocument(
         () => undefined,
         appendLines(["<!-- wf-note:begin:nd-uuid-003 -->", "- [[访谈录音]]", "<!-- wf-note:end:nd-uuid-003 -->"]),
       ),
     );
-    assert.deepEqual(issuesWithCode(issues, "NOTE_SECTION_UNPAIRED"), []);
-    assert.deepEqual(issuesWithCode(issues, "NOTE_SECTION_NESTED"), []);
-    assert.deepEqual(issuesWithCode(issues, "NOTE_SECTION_ID_MISMATCH"), []);
+    assert.deepEqual(issuesWithCode(paired, "NOTE_SECTION_UNPAIRED"), []);
   });
 });
 
@@ -422,10 +389,31 @@ describe("consistency · frontmatter 摘要字段", () => {
     assert.equal(found[0].line, 5);
   });
 
-  test("没有 frontmatter 时只报缺字段与缺失正文锚点", () => {
+  test("M1.6 wf-key ↔ noteKey：写回自动一致，抄来的侧车才报 FRONTMATTER_KEY_MISMATCH", () => {
+    const document = clone(validDocument());
+    document.noteKey = "3f9a1c2b7d";
+    const markdown = withDocument((doc) => (doc.noteKey = "3f9a1c2b7d"));
+
+    // 只有 JSON 有 noteKey、frontmatter 还没写 → 不算错（老文件也是这样）
+    assert.deepEqual(issuesWithCode(run(markdown), "FRONTMATTER_KEY_MISMATCH"), []);
+
+    // 写回 frontmatter 后两边一致 → 依旧零问题
+    const written = upsertFrontmatterSummary(markdown, document).markdown;
+    assert.ok(written.includes("wf-key: 3f9a1c2b7d"));
+    assert.deepEqual(issuesWithCode(run(written), "FRONTMATTER_KEY_MISMATCH"), []);
+
+    // 抄来别人的 wf-key → 报 warning，行号指到 wf-key 那一行
+    const copied = written.replace("wf-key: 3f9a1c2b7d", "wf-key: 0123456789");
+    const found = issuesWithCode(run(copied), "FRONTMATTER_KEY_MISMATCH");
+    assert.equal(found.length, 1);
+    assert.equal(found[0].severity, "warning");
+    assert.ok((found[0].line ?? 0) > 0);
+  });
+
+  test("没有 frontmatter 时只报缺字段（正文锚点已不参与）", () => {
     const issues = run(wfjsonBlockOnly());
     assert.equal(issuesWithCode(issues, "FRONTMATTER_FIELD_MISSING").length, 1);
-    assert.equal(issuesWithCode(issues, "NOTE_ANCHOR_MISSING_IN_BODY").length, 4);
+    assert.deepEqual(issuesWithCode(issues, "NOTE_ANCHOR_MISSING_IN_BODY"), []);
   });
 });
 
